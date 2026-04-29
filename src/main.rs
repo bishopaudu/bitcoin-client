@@ -14,7 +14,7 @@ use message::MAGIC_TESTNET;
 use version::{build_version_payload, generate_nonce};
 use peer::{connect_to_peer, send_message, handle_message};
 use parser::read_message;
-use network::find_testnet_peer;
+use network::find_testnet_peers;
 
 fn main() {
     println!("╔══════════════════════════════════════════╗");
@@ -23,27 +23,45 @@ fn main() {
     println!();
 
     // ── Step 1: Peer Discovery ────────────────────────────────────────────
-    // Ask testnet DNS seeds for a live node's IP address.
-    // If all DNS seeds fail (no internet, seeds are down, etc.),
-    // fall back to a hardcoded IP address as a last resort.
-    let peer_addr = find_testnet_peer()
-        .unwrap_or_else(|| {
-            println!("[!] All DNS seeds failed — using hardcoded fallback address");
-            // This is an example fallback address. In a real client you would
-            // maintain a local database of recently-seen peer addresses.
-            "18.185.153.17:18333".to_string()
-        });
+    // Query all testnet DNS seeds and collect every IP they return.
+    // We'll iterate through them in order, attempting a TCP connection
+    // to each one with a 5-second timeout, stopping at the first success.
+    let mut candidates = find_testnet_peers();
 
-    println!("[*] Target peer: {}", peer_addr);
+    // Last-resort fallback addresses — used only if ALL DNS seeds fail.
+    // These are stable, long-running testnet nodes maintained by the community.
+    if candidates.is_empty() {
+        println!("[!] All DNS seeds failed — using hardcoded fallback addresses");
+        candidates = vec![
+            "185.210.125.33:18333".to_string(),
+            "77.163.221.171:18333".to_string(),
+            "69.59.18.23:18333".to_string(),
+            "193.30.123.70:18333".to_string(),
+        ];
+    }
 
-    //Step 2: TCP Connection 
-    // Open a TCP connection to the peer and configure the socket.
-    let mut stream = match connect_to_peer(&peer_addr) {
-        Ok(s)  => s,
-        Err(e) => {
-            eprintln!("[!] Failed to connect to {}: {}", peer_addr, e);
-            std::process::exit(1); // Non-zero exit code signals failure to the shell
+    // ── Step 2: TCP Connection ────────────────────────────────────────────
+    // Try each candidate in turn. connect_to_peer uses a 5-second timeout,
+    // so dead/firewalled peers fail quickly instead of hanging for ~75s.
+    println!("[*] Trying {} candidate peer(s)...\n", candidates.len());
+
+    let (mut stream, peer_addr) = 'connect: {
+        for addr in &candidates {
+            match connect_to_peer(addr) {
+                Ok(s) => {
+                    println!("[+] Connected to {}\n", addr);
+                    break 'connect (s, addr.clone());
+                }
+                Err(e) => {
+                    // Print a short reason and move on to the next candidate.
+                    // Typical reasons: "timed out", "connection refused", "network unreachable"
+                    println!("[!] {} — {} (trying next...)", addr, e);
+                }
+            }
         }
+        // All candidates exhausted — nothing worked.
+        eprintln!("[!] Could not connect to any peer. Check your internet connection.");
+        std::process::exit(1);
     };
 
     // Parse the peer's IP and port from the address string.

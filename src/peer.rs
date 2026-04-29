@@ -10,7 +10,7 @@
 // string and routes each message to the appropriate logic. For a more
 // advanced client you'd split each handler into its own function or module.
 
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::io::{self, Write};
 use std::time::Duration;
 use crate::message::build_message;
@@ -31,19 +31,27 @@ use crate::crypto::{double_sha256, hex_encode};
 pub fn connect_to_peer(addr: &str) -> io::Result<TcpStream> {
     println!("[*] Connecting to Bitcoin node at {}...", addr);
 
-    // TcpStream::connect performs the full TCP three-way handshake (SYN/SYN-ACK/ACK).
-    // This call blocks until either the connection is established or it times out.
-    let stream = TcpStream::connect(addr)?;
+    // Resolve the address to a SocketAddr — required by connect_timeout.
+    let socket_addr = addr
+        .to_socket_addrs()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses resolved"))?;
+
+    // connect_timeout replaces the plain connect() call. The OS default TCP
+    // connect timeout is ~75 seconds — far too long when iterating through a
+    // list of candidates. 5 seconds is enough to confirm a peer is reachable.
+    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))?;
 
     println!("[+] TCP connection established to {}", addr);
 
     // If we don't receive any data for 30 seconds, return a TimedOut error
     // rather than blocking forever. We'll use this to send keepalive pings.
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
 
     // If a write blocks for 30 seconds (e.g. peer's receive buffer is full),
     // return an error rather than hanging indefinitely.
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(60)))?;
 
     // Disable Nagle's algorithm. Nagle buffers small writes hoping to batch them
     // into larger TCP segments for efficiency. For Bitcoin's protocol, we want

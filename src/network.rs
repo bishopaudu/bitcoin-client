@@ -24,57 +24,70 @@ pub const TESTNET_DNS_SEEDS: &[&str] = &[
     "testnet-seed.bluematt.me",              // Maintained by Matt Corallo (Bitcoin Core dev)
 ];
 
-// Perform a DNS lookup on a seed hostname and return the first resolved address.
+// Perform a DNS lookup on a seed hostname and return ALL resolved addresses.
 //
 // `hostname`: the DNS seed hostname, e.g. "testnet-seed.bluematt.me"
 // `port`:     the port to pair with each resolved IP, e.g. 18333 for testnet
 //
-// Returns Some("ip:port") if resolution succeeds, None on failure.
+// Returns a Vec<String> of all "ip:port" strings resolved for this seed.
+// Returns an empty Vec on DNS failure.
 //
-// How it works:
-//   We use Rust's standard `ToSocketAddrs` trait to perform a blocking DNS
-//   lookup. The OS resolver contacts DNS servers and returns a list of A/AAAA
-//   records. We take the first result and format it as "ip:port".
-pub fn resolve_dns_seed(hostname: &str, port: u16) -> Option<String> {
-    // Format as "hostname:port" — the ToSocketAddrs trait needs this format
-    // to know which port to associate with each resolved address
+// Why return ALL addresses instead of just the first?
+//   DNS seeds deliberately return a rotating set of IPs. Any single IP may be
+//   firewalled, temporarily offline, or filtered by your ISP. By collecting
+//   every address, the caller can try each one in turn and skip dead peers
+//   without ever waiting for the OS TCP timeout (~75 seconds per attempt).
+pub fn resolve_dns_seed(hostname: &str, port: u16) -> Vec<String> {
     let addr_str = format!("{}:{}", hostname, port);
 
     match addr_str.to_socket_addrs() {
-        Ok(mut addrs) => {
-            // `addrs` is an iterator over all resolved addresses.
-            // DNS seeds often return many IPs — we just take the first.
-            if let Some(addr) = addrs.next() {
-                println!("[*] DNS seed '{}' → {}", hostname, addr);
-                return Some(addr.to_string()); // e.g. "203.0.113.1:18333"
+        Ok(addrs) => {
+            // Collect every resolved address, not just the first.
+            // DNS seeds often return 10-50 IPs per query.
+            let results: Vec<String> = addrs.map(|a| a.to_string()).collect();
+            if results.is_empty() {
+                eprintln!("[!] DNS seed '{}' returned no addresses", hostname);
+            } else {
+                println!(
+                    "[*] DNS seed '{}' → {} candidate(s)",
+                    hostname,
+                    results.len()
+                );
             }
-            // DNS lookup succeeded but returned zero records — unusual
-            eprintln!("[!] DNS seed '{}' returned no addresses", hostname);
-            None
+            results
         }
         Err(e) => {
-            // DNS lookup failed: network unavailable, hostname not found, etc.
             eprintln!("[!] DNS lookup failed for '{}': {}", hostname, e);
-            None
+            Vec::new()
         }
     }
 }
 
-// Try each testnet DNS seed in order and return the first working address.
+// Collect every candidate peer address from all testnet DNS seeds.
 //
-// We try seeds sequentially rather than in parallel for simplicity.
-// If the first seed fails (it's down, DNS is unavailable, etc.),
-// we fall through to the next one.
+// Queries every seed and merges their results into a single deduplicated list.
+// The caller should iterate through this list, attempting a TCP connection
+// to each address with a short timeout, stopping at the first success.
 //
-// Returns Some("ip:port") if any seed resolves successfully.
-// Returns None if ALL seeds fail — caller should use a fallback address.
-pub fn find_testnet_peer() -> Option<String> {
+// Returns an empty Vec only if all DNS seeds fail entirely (no internet, etc.).
+pub fn find_testnet_peers() -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
     for seed in TESTNET_DNS_SEEDS {
-        if let Some(addr) = resolve_dns_seed(seed, 18333) {
-            return Some(addr); // Return the first successful resolution
+        for addr in resolve_dns_seed(seed, 18333) {
+            // Deduplicate — multiple seeds may return overlapping IPs
+            if seen.insert(addr.clone()) {
+                candidates.push(addr);
+            }
         }
     }
-    // All seeds failed — network might be unavailable or seeds are down
-    eprintln!("[!] All DNS seeds failed");
-    None
+
+    if candidates.is_empty() {
+        eprintln!("[!] All DNS seeds failed — no candidates found");
+    } else {
+        println!("[*] Total unique peer candidates: {}", candidates.len());
+    }
+
+    candidates
 }
