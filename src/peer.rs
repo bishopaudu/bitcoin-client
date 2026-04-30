@@ -1,5 +1,3 @@
-// peer.rs — Peer connection management and message handling
-//
 // This module owns everything related to a single peer connection:
 //   - Opening the TCP socket with the right settings
 //   - Sending messages down the socket
@@ -13,11 +11,13 @@
 use std::net::{TcpStream, ToSocketAddrs};
 use std::io::{self, Write};
 use std::time::Duration;
-use crate::message::build_message;
-use crate::version::{build_version_payload, decode_version_payload, generate_nonce};
-use crate::parser::{read_message, BitcoinMessage};
 use crate::encoding::decode_varint;
+use crate::message::build_message;
+use crate::version::decode_version_payload;
+use crate::parser::{ BitcoinMessage};
 use crate::crypto::{double_sha256, hex_encode};
+use crate::transaction::{request_transaction, decode_and_display_tx};
+use crate::mempool::handle_mempool_inv;
 
 // Open a TCP connection to a Bitcoin peer and configure the socket.
 //
@@ -116,12 +116,14 @@ pub fn send_verack(stream: &mut TcpStream, magic: [u8; 4]) -> io::Result<()> {
 //
 // `handshake_done`:    set to true once we've received their verack
 // `got_their_version`: set to true once we've received their version
+// `is_mempool_response`: true if this message is likely responding to a mempool request
 pub fn handle_message(
     msg: &BitcoinMessage,
     stream: &mut TcpStream,
     magic: [u8; 4],
     handshake_done: &mut bool,
     got_their_version: &mut bool,
+    is_mempool_response: bool,
 ) -> io::Result<()> {
     match msg.command.as_str() {
 
@@ -189,7 +191,16 @@ pub fn handle_message(
         //   type (4 bytes): 1=TX, 2=BLOCK, 3=FILTERED_BLOCK, 4=CMPCT_BLOCK
         //   hash (32 bytes): the txid or block hash
         "inv" => {
-            parse_and_log_inv(&msg.payload);
+            if is_mempool_response {
+                // It's a mempool snapshot — delegate to mempool.rs.
+                // We pass fetch_count=3 so it automatically downloads the first 3 txs
+                // to give us a taste of the mempool content!
+                handle_mempool_inv(&msg.payload, stream, magic, 3);
+            } else {
+                // It's a normal live announcement. Parse it, and if it has TXs,
+                // automatically request the full transaction data!
+                parse_and_request_inv(&msg.payload, stream, magic);
+            }
         }
 
         // ── addr ──────────────────────────────────────────────────────────
@@ -238,9 +249,10 @@ pub fn handle_message(
         // Like block hashes, txids are displayed in reversed byte order.
         "tx" => {
             // The txid is the double-SHA256 of the raw transaction bytes
-            let mut txid = double_sha256(&msg.payload);
-            txid.reverse(); // Reverse for display convention
-            println!("[←] TX txid={}", hex_encode(&txid));
+            let txid = double_sha256(&msg.payload);
+            
+            // Delegate decoding and display to our new transaction.rs module!
+            decode_and_display_tx(&msg.payload, &txid);
         }
 
         // ── feefilter ─────────────────────────────────────────────────────
@@ -326,7 +338,7 @@ pub fn handle_message(
 // Payload format:
 //   varint(count)                    — how many items follow
 //   [count × (4-byte type + 32-byte hash)]   — the inventory items
-fn parse_and_log_inv(payload: &[u8]) {
+fn parse_and_request_inv(payload: &[u8], stream: &mut TcpStream, magic: [u8; 4]) {
     // Read the count varint at the start of the payload
     let (count, mut offset) = match decode_varint(payload, 0) {
         Ok(r)  => r,
@@ -346,12 +358,13 @@ fn parse_and_log_inv(payload: &[u8]) {
         let inv_type = u32::from_le_bytes(payload[offset..offset+4].try_into().unwrap());
 
         // Read the 32-byte hash (txid or block hash)
-        let hash_slice = &payload[offset+4..offset+36];
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&payload[offset+4..offset+36]);
         offset += 36; // Advance to the next entry
 
         // Reverse the hash bytes for display (Bitcoin's display convention)
         let mut display = [0u8; 32];
-        display.copy_from_slice(hash_slice);
+        display.copy_from_slice(&hash);
         display.reverse();
 
         // Map the type integer to a human-readable name
@@ -364,6 +377,14 @@ fn parse_and_log_inv(payload: &[u8]) {
         };
 
         println!("    [{:2}] {} {}", i, type_str, hex_encode(&display));
+
+        // NEW: If it's a TX, actively request the full transaction data!
+        // This is what turns us from a passive listener into an active fetcher.
+        if inv_type == 1 {
+            if let Err(e) = request_transaction(stream, &hash, magic) {
+                println!("    [!] Failed to request transaction: {}", e);
+            }
+        }
     }
 
     // If there were more than 10 items, note the remainder

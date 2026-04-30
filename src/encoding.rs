@@ -10,7 +10,7 @@
 // These are stateless helper functions with no I/O — they only
 // transform data between Rust types and raw byte vectors.
 
-// ── Variable-Length Integer (varint) ─────────────────────────────────────────
+// Variable-Length Integer (varint)
 //
 // Bitcoin uses varints to compactly represent lengths and counts.
 // Instead of always using 4 or 8 bytes, small numbers use fewer bytes:
@@ -120,7 +120,7 @@ pub fn encode_varstr(s: &str) -> Vec<u8> {
     v
 }
 
-// ── Network Address (net_addr) ────────────────────────────────────────────────
+//Network Address (net_addr) 
 //
 // A 26-byte structure used in `version` and `addr` messages to describe
 // a peer's network address. Layout:

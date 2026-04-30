@@ -11,8 +11,6 @@ let mut hasher = Sha256::new();
  // use the Into trait to convert from generic array to [u8; 32]
   hash2.into() 
 
-
-
 }
 pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()

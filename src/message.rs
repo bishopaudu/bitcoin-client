@@ -1,4 +1,4 @@
-// message.rs — Bitcoin message header structure and framing
+//Bitcoin message header structure and framing
 //
 // Every single message sent on the Bitcoin P2P network — whether it's
 // a version handshake, a ping, a full block, or a transaction — is wrapped

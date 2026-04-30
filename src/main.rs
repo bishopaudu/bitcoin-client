@@ -1,13 +1,28 @@
 // After the handshake completes (version + verack exchanged both ways),
-// the peer will begin sending us real Bitcoin network messages:
+// the peer will begin sending us real Bitcoin network messages.
+//
+// MODULE MAP — how the files connect:
+//
+//   main.rs        ← you are here. Orchestrates everything.
+//   network.rs     ← DNS seed resolution, peer discovery
+//   peer.rs        ← TCP connect, send_message, handle_message dispatcher
+//   parser.rs      ← reads raw bytes from socket into BitcoinMessage structs
+//   message.rs     ← MessageHeader, build_message, magic constants
+//   version.rs     ← builds/decodes the version handshake payload
+//   encoding.rs    ← varint, varstr, net_addr encode/decode helpers
+//   crypto.rs      ← SHA256 / double_sha256 / hex_encode
+//   transaction.rs ← [NEW] request + decode full transactions via getdata/tx
+//   mempool.rs     ← [NEW] request peer's mempool via mempool/inv messages
 
-mod crypto;   // SHA256 implementation and hex encoding
-mod encoding; // varint, varstr, net_addr encode/decode
-mod message;  // MessageHeader struct, build_message, magic constants
-mod version;  // version payload builder and decoder
-mod parser;   // streaming message reader (read_message)
-mod peer;     // TCP connection, send_message, message dispatcher
-mod network;  // DNS seed resolution
+mod crypto;
+mod encoding;
+mod message;
+mod version;
+mod parser;
+mod peer;
+mod network;
+mod transaction; 
+mod mempool;    
 
 use std::io;
 use message::MAGIC_TESTNET;
@@ -16,13 +31,51 @@ use peer::{connect_to_peer, send_message, handle_message};
 use parser::read_message;
 use network::find_testnet_peers;
 
+// Helper to decode a hex string into a 32-byte array, reversed for internal use.
+// This is needed because users input TXIDs in display order (like block explorers),
+// but the Bitcoin protocol requires them in internal byte order (reversed).
+fn parse_txid_hex(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err("TXID must be exactly 64 hex characters".to_string());
+    }
+    let mut bytes = [0u8; 32];
+    for i in 0..32 {
+        let byte_str = &hex[i * 2..i * 2 + 2];
+        bytes[i] = u8::from_str_radix(byte_str, 16)
+            .map_err(|_| "Invalid hex character in TXID".to_string())?;
+    }
+    bytes.reverse(); // Convert display order to internal byte order
+    Ok(bytes)
+}
+
 fn main() {
     println!("╔══════════════════════════════════════════╗");
     println!("║   Rust Bitcoin P2P Client — Testnet3     ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
 
-    // ── Step 1: Peer Discovery ────────────────────────────────────────────
+    // Command Line Arguments
+    let args: Vec<String> = std::env::args().collect();
+    let mut request_mempool_on_start = false;
+    let mut target_txid: Option<String> = None;
+
+    if args.len() > 1 {
+        let arg = &args[1];
+        if arg == "mempool" {
+            request_mempool_on_start = true;
+            println!("[*] CLI flag: Will request mempool snapshot after handshake.");
+            println!("    (Note: some peers may disconnect when you ask for this)");
+        } else if arg.len() == 64 {
+            target_txid = Some(arg.clone());
+            println!("[*] CLI flag: Will request specific TX: {}", arg);
+        } else {
+            eprintln!("Usage: cargo run -- [mempool | <txid>]");
+            std::process::exit(1);
+        }
+    }
+    println!();
+
+    // Step 1: Peer Discovery
     // Query all testnet DNS seeds and collect every IP they return.
     // We'll iterate through them in order, attempting a TCP connection
     // to each one with a 5-second timeout, stopping at the first success.
@@ -53,8 +106,6 @@ fn main() {
                     break 'connect (s, addr.clone());
                 }
                 Err(e) => {
-                    // Print a short reason and move on to the next candidate.
-                    // Typical reasons: "timed out", "connection refused", "network unreachable"
                     println!("[!] {} — {} (trying next...)", addr, e);
                 }
             }
@@ -77,7 +128,7 @@ fn main() {
     // Using testnet magic means any mainnet messages will be rejected.
     let magic = MAGIC_TESTNET;
 
-    // ── Step 3: Send Version Message ─────────────────────────────────────
+    // Step 3: Send Version Message
     // Bitcoin protocol rule: the connecting party (us) MUST send `version` first.
     // The receiving party (the peer) will then send their `version` back,
     // followed by `verack`. We send our `verack` when we receive theirs.
@@ -88,12 +139,25 @@ fn main() {
     }
     println!("[→] Version message sent — waiting for peer response...\n");
 
-    // ── Step 4: Message Loop ──────────────────────────────────────────────
+    //  Step 4: Message Loop
     // Track the handshake state. Both flags must be true before the peer
     // will send us useful data.
     let mut handshake_done    = false; // True after we receive their verack
     let mut got_their_version = false; // True after we receive their version
     let mut message_count     = 0u64; // Total messages received (for display)
+
+    //  Mempool and transaction tracking flags
+    //
+    // mempool_requested: becomes true when we send the `mempool` message.
+    //   We use this flag so that when an `inv` arrives, handle_message knows
+    //   whether to treat it as a mempool response (potentially hundreds of txids)
+    //   or as a live new-transaction announcement (usually 1-3 txids).
+    //   Without this flag, we can't tell the difference just from the message itself.
+    //
+    // mempool_done: becomes true after we've processed the mempool inv response.
+    //   Prevents us from treating subsequent `inv` messages as mempool responses.
+    let mut mempool_requested = false;
+    let mut mempool_done      = false;
 
     println!("[*] Entering message loop... (press Ctrl+C to stop)\n");
 
@@ -138,28 +202,71 @@ fn main() {
         // Print a visual separator for each message to make the log readable
         println!("\n[MSG #{:04}] ─────────────────────────────────────", message_count);
 
-        // Dispatch the message to the appropriate handler in peer.rs.
-        // The handler updates handshake_done / got_their_version as a side effect.
+        // ── Dispatch to handle_message ────────────────────────────────────
+        //
+        // handle_message (in peer.rs) is the central dispatcher — it matches
+        // on msg.command and routes to the right handler for each message type.
+        //
+        // We pass mempool_requested so the `inv` handler knows whether to
+        // treat an incoming inv as a mempool dump or a live tx announcement.
         if let Err(e) = handle_message(
             &msg,
             &mut stream,
             magic,
             &mut handshake_done,
             &mut got_their_version,
+            mempool_requested && !mempool_done, // is this inv a mempool response?
         ) {
             eprintln!("[!] Error handling '{}' message: {}", msg.command, e);
-            // Don't break — a single handler error shouldn't kill the connection
         }
 
-        // ── Post-handshake: request more peer addresses once ───────────────
-        // After the handshake completes, send `getaddr` to request a list of
-        // peers this node knows about. The peer will respond with an `addr`
-        // message containing up to 1000 IP addresses. We do this once (at
-        // message 5) to avoid spamming the peer with repeated requests.
+        // ── Mark mempool response as handled ──────────────────────────────
+        // If we had requested a mempool and just received an `inv`, that `inv`
+        // was the mempool response. Mark it done so future `inv` messages
+        // are treated as live transaction announcements, not mempool dumps.
+        if mempool_requested && !mempool_done && msg.command == "inv" {
+            mempool_done = true;
+            mempool::print_mempool_summary(&[]); // print closing summary line
+        }
+
+        // ── Post-handshake actions (run once each) ────────────────────────
+        //
+        // These blocks use message_count as a simple "run once" trigger.
+        // We offset them so they don't all fire at the same time.
+
+        // At message 5: request peer addresses (getaddr)
+        // The peer responds with an `addr` message containing up to 1000
+        // IP addresses of other nodes it knows about.
         if handshake_done && message_count == 5 {
             println!("\n[*] Handshake complete — requesting peer addresses (getaddr)...");
             if let Err(e) = send_message(&mut stream, "getaddr", &[], magic) {
                 eprintln!("[!] Failed to send getaddr: {}", e);
+            }
+        }
+
+        // At message 6: Process Command Line Arguments
+        // We wait until message 6 (after getaddr) so the peer has had a chance
+        // to settle after the handshake before we fire another request.
+        if handshake_done && message_count == 6 {
+            // Check if user requested a specific TX on the command line
+            if let Some(ref hex_txid) = target_txid {
+                println!("\n[*] Requesting specific TX from command line...");
+                match parse_txid_hex(hex_txid) {
+                    Ok(internal_txid) => {
+                        if let Err(e) = transaction::request_transaction(&mut stream, &internal_txid, magic) {
+                            eprintln!("[!] Failed to request transaction: {}", e);
+                        }
+                    }
+                    Err(e) => eprintln!("[!] Invalid TXID format: {}", e),
+                }
+            }
+            // Or check if user requested a mempool snapshot
+            else if request_mempool_on_start && !mempool_requested {
+                if let Err(e) = mempool::request_mempool_snapshot(&mut stream, magic) {
+                    eprintln!("[!] Failed to send mempool request: {}", e);
+                } else {
+                    mempool_requested = true; // flag: the next inv is a mempool response
+                }
             }
         }
     }
