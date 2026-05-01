@@ -1,8 +1,37 @@
 [package]
 name = "bitcoin-client"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 rand = "0.10.1"
 sha2 = "0.11.0"
+
+# ── Tauri core ────────────────────────────────────────────────────────────────
+# "api-all" enables all of Tauri's built-in APIs on the JS side (file system,
+# shell, etc). We don't use most of them, but it keeps configuration simple.
+tauri = { version = "1", features = [] }
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+# serde: the standard Rust serialization framework.
+# We need this to serialize our Rust structs into JSON so Tauri can send
+# them across the bridge to JavaScript.
+# "derive" feature gives us #[derive(Serialize, Deserialize)] macros.
+serde = { version = "1", features = ["derive"] }
+
+# serde_json: turns Rust structs into JSON strings and back.
+# Tauri uses JSON as the wire format for the JS↔Rust bridge.
+serde_json = "1"
+
+[build-dependencies]
+# Required by Tauri's build system — sets up the app icon, manifest, etc.
+tauri-build = { version = "1", features = [] }
+
+# ── Build profile optimizations ───────────────────────────────────────────────
+# These settings apply when you run `cargo tauri build` for a release binary.
+# They make the final app smaller and faster.
+[profile.release]
+opt-level    = "s"   # Optimize for binary SIZE (s = size) rather than speed
+lto          = true  # Link-Time Optimization: removes unused code across crates
+codegen-units = 1    # Compile everything as one unit (slower compile, better opt)
+strip        = true  # Strip debug symbols from binary (smaller file)
