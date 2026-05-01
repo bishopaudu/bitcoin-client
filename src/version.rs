@@ -23,6 +23,8 @@
 //   - Relay flag (do you want unconfirmed transactions?)
 
 use std::time::{SystemTime, UNIX_EPOCH};
+use rand::Rng;
+
 use crate::encoding::{encode_varstr, encode_net_addr, decode_varint};
 
 // Generate a pseudo-random 64-bit nonce for use in the version message.
@@ -30,19 +32,14 @@ use crate::encoding::{encode_varstr, encode_net_addr, decode_varint};
 // The nonce serves one purpose: loop detection. If we receive back the same
 // nonce we sent, we know we have accidentally connected to ourselves (our own
 // node, perhaps via NAT reflection) and should immediately disconnect.
-//
-// In production code you would use a cryptographically secure RNG (e.g.
-// the `rand` crate with OsRng). Here we derive entropy from the nanosecond
-// timestamp and some bit manipulation to keep the code dependency-free.
+
+
 pub fn generate_nonce() -> u64 {
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()      // Panics only if system clock is set before Jan 1 1970
-        .as_nanos() as u64;
-    // XOR with a rotated copy of itself to spread entropy across all 64 bits.
-    // Without this, low nanosecond values would leave the high bytes near-zero.
-    t ^ t.rotate_left(32) ^ 0xDEADBEEFCAFEBABE
+    let mut random = rand::rng();
+    random.next_u64()
+
 }
+
 
 // Build the raw byte payload for a Bitcoin `version` message.
 //

@@ -1,5 +1,3 @@
-// network.rs — Peer discovery via DNS seeds
-//
 // When a Bitcoin node starts for the first time, it has no saved peer
 // addresses. To bootstrap, it performs DNS lookups on well-known hostnames
 // called "DNS seeds." These hostnames are maintained by trusted community
@@ -14,14 +12,10 @@
 
 use std::net::ToSocketAddrs;
 
-// Known DNS seeds for Bitcoin testnet3.
-// These hostnames resolve to multiple IP addresses of live testnet nodes.
-// In production (mainnet), different seeds are used:
-//   seed.bitcoin.sipa.be, dnsseed.bluematt.me, etc.
 pub const TESTNET_DNS_SEEDS: &[&str] = &[
-    "testnet-seed.bitcoin.jonasschnelli.ch", // Maintained by Jonas Schnelli (Bitcoin Core dev)
-    "seed.tbtc.petertodd.org",               // Maintained by Peter Todd (Bitcoin researcher)
-    "testnet-seed.bluematt.me",              // Maintained by Matt Corallo (Bitcoin Core dev)
+    "testnet-seed.bitcoin.jonasschnelli.ch", 
+    "seed.tbtc.petertodd.org",               
+    "testnet-seed.bluematt.me",              
 ];
 
 // Perform a DNS lookup on a seed hostname and return ALL resolved addresses.
@@ -32,11 +26,8 @@ pub const TESTNET_DNS_SEEDS: &[&str] = &[
 // Returns a Vec<String> of all "ip:port" strings resolved for this seed.
 // Returns an empty Vec on DNS failure.
 //
-// Why return ALL addresses instead of just the first?
-//   DNS seeds deliberately return a rotating set of IPs. Any single IP may be
-//   firewalled, temporarily offline, or filtered by your ISP. By collecting
-//   every address, the caller can try each one in turn and skip dead peers
-//   without ever waiting for the OS TCP timeout (~75 seconds per attempt).
+// By collecting every address, the caller can try each one in turn and skip dead peers
+// without ever waiting for the OS TCP timeout (~75 seconds per attempt).
 pub fn resolve_dns_seed(hostname: &str, port: u16) -> Vec<String> {
     let addr_str = format!("{}:{}", hostname, port);
 

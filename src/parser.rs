@@ -1,5 +1,3 @@
-// parser.rs — Streaming Bitcoin message parser
-//
 // This module is responsible for reading raw bytes from a TCP socket
 // and reassembling them into complete, validated Bitcoin messages.
 //

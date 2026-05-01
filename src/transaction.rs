@@ -1,4 +1,3 @@
-// transaction.rs — Transaction Fetching and Decoding
 //
 // ── What This File Does ───────────────────────────────────────────────────────
 //

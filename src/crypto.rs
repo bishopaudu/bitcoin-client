@@ -1,4 +1,3 @@
-// Compute SHA256(SHA256(data)) — Bitcoin standard double hash
 use sha2::{Sha256, Digest};
 pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 let mut hasher = Sha256::new();

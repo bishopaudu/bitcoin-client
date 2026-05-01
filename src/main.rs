@@ -1,9 +1,7 @@
 // After the handshake completes (version + verack exchanged both ways),
 // the peer will begin sending us real Bitcoin network messages.
 //
-// MODULE MAP — how the files connect:
 //
-//   main.rs        ← you are here. Orchestrates everything.
 //   network.rs     ← DNS seed resolution, peer discovery
 //   peer.rs        ← TCP connect, send_message, handle_message dispatcher
 //   parser.rs      ← reads raw bytes from socket into BitcoinMessage structs
@@ -11,8 +9,8 @@
 //   version.rs     ← builds/decodes the version handshake payload
 //   encoding.rs    ← varint, varstr, net_addr encode/decode helpers
 //   crypto.rs      ← SHA256 / double_sha256 / hex_encode
-//   transaction.rs ← [NEW] request + decode full transactions via getdata/tx
-//   mempool.rs     ← [NEW] request peer's mempool via mempool/inv messages
+//   transaction.rs ← request + decode full transactions via getdata/tx
+//   mempool.rs     ← request peer's mempool via mempool/inv messages
 
 mod crypto;
 mod encoding;
@@ -221,9 +219,6 @@ fn main() {
         }
 
         // ── Mark mempool response as handled ──────────────────────────────
-        // If we had requested a mempool and just received an `inv`, that `inv`
-        // was the mempool response. Mark it done so future `inv` messages
-        // are treated as live transaction announcements, not mempool dumps.
         if mempool_requested && !mempool_done && msg.command == "inv" {
             mempool_done = true;
             mempool::print_mempool_summary(&[]); // print closing summary line
