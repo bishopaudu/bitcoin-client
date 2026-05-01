@@ -158,24 +158,39 @@ html, body, #root { height: 100%; width: 100%; background: var(--bg); color: var
 
 /* ── Transaction panel ── */
 .tx-header  { margin-bottom: 12px; }
-.tx-txid    { font-family: var(--mono); font-size: 11px; color: var(--blue); word-break: break-all; margin-bottom: 6px; }
-.tx-badges  { display: flex; gap: 6px; }
-.badge      { font-size: 10px; padding: 2px 7px; border-radius: 10px; background: var(--bg3); border: 1px solid var(--border); }
-.badge-blue { background: rgba(88,166,255,0.15); color: var(--blue); border-color: rgba(88,166,255,0.4); }
+.tx-txid    { font-family: var(--mono); font-size: 11px; color: var(--blue); word-break: break-all; margin-bottom: 8px; }
+.tx-badges  { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge        { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--bg3); border: 1px solid var(--border); }
+.badge-blue   { background: rgba(88,166,255,0.15); color: var(--blue); border-color: rgba(88,166,255,0.4); }
+.badge-green  { background: rgba(63,185,80,0.15);  color: var(--green); border-color: rgba(63,185,80,0.4); }
+.badge-orange { background: rgba(247,147,26,0.15); color: var(--orange); border-color: rgba(247,147,26,0.4); }
 
-.tx-stats   { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 14px; }
+.tx-stats   { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin: 12px 0; }
 .stat       { background: var(--bg3); border-radius: 6px; padding: 8px; text-align: center; }
-.stat-value { font-size: 16px; font-weight: 600; color: var(--orange); }
+.stat-value { font-size: 15px; font-weight: 600; color: var(--orange); }
 .stat-label { font-size: 10px; color: var(--text2); margin-top: 2px; }
 
-.tx-section-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin: 10px 0 6px; }
+.tx-section-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin: 12px 0 6px; }
 
-.tx-list    { display: flex; flex-direction: column; gap: 4px; }
-.tx-row     { background: var(--bg3); border-radius: 5px; padding: 7px 10px; font-family: var(--mono); font-size: 11px; color: var(--text2); }
+.tx-list { display: flex; flex-direction: column; gap: 4px; }
+.tx-row {
+  background: var(--bg3); border-radius: 5px; padding: 7px 10px;
+  font-family: var(--mono); font-size: 11px;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+}
+.tx-row-label { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tx-row-value { color: var(--orange); white-space: nowrap; font-weight: 600; }
+
+.tx-error { text-align: center; padding: 30px 20px; }
+.tx-error-icon { font-size: 36px; margin-bottom: 12px; }
+.tx-error-msg  { color: var(--text2); font-size: 13px; line-height: 1.6; }
 
 /* ── Mempool ── */
 .mempool-count { font-size: 11px; color: var(--text2); margin-top: 8px; text-align: center; }
-
+.mempool-stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 10px; }
+.mempool-stat      { background: var(--bg3); border-radius: 6px; padding: 7px; text-align: center; }
+.mempool-stat-val  { font-size: 14px; font-weight: 600; color: var(--orange); }
+.mempool-stat-lbl  { font-size: 10px; color: var(--text2); }
 .mempool-table { display: flex; flex-direction: column; gap: 3px; max-height: 300px; overflow-y: auto; }
 .mempool-row   { font-family: var(--mono); font-size: 11px; padding: 5px 8px; background: var(--bg3); border-radius: 4px; color: var(--text2); }
 .mempool-row:hover { color: var(--blue); cursor: pointer; }

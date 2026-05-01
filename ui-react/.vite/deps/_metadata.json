@@ -1,0 +1,44 @@
+{
+  "hash": "7ba41d9f",
+  "configHash": "87de9862",
+  "lockfileHash": "3f8aaca2",
+  "browserHash": "d1dec842",
+  "optimized": {
+    "@tauri-apps/api/event": {
+      "src": "../../node_modules/@tauri-apps/api/event.js",
+      "file": "@tauri-apps_api_event.js",
+      "fileHash": "fff3ef96",
+      "needsInterop": false
+    },
+    "@tauri-apps/api/tauri": {
+      "src": "../../node_modules/@tauri-apps/api/tauri.js",
+      "file": "@tauri-apps_api_tauri.js",
+      "fileHash": "e63bf9cc",
+      "needsInterop": false
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "e464bab6",
+      "needsInterop": true
+    },
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "7e6a40a7",
+      "needsInterop": true
+    },
+    "react/jsx-dev-runtime": {
+      "src": "../../node_modules/react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "65f2aa6e",
+      "needsInterop": true
+    }
+  },
+  "chunks": {
+    "react-DW0Z4HR0": {
+      "file": "react-DW0Z4HR0.js",
+      "isDynamicEntry": false
+    }
+  }
+}

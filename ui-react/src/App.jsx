@@ -3,176 +3,73 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
 import './App.css';
 
-// ── Message type reference data ───────────────────────────────────────────────
+const MEMPOOL_API = 'https://mempool.space/testnet/api';
+
+// ── Message Guide Data ────────────────────────────────────────────────────────
 const MESSAGE_GUIDE = [
-  {
-    cmd: 'version',
-    color: 'purple',
-    title: 'Version Handshake',
-    description: 'The peer is introducing itself. Contains its software version, supported features (services), current block height, and a unique nonce. Your app replies with a verack to acknowledge.',
-    fields: [
-      { name: 'version', detail: 'Protocol version (e.g. 70016). Both nodes must agree.' },
-      { name: 'services', detail: 'Bitmask of features. 0x409 means Full Node + SegWit + Addr support.' },
-      { name: 'user_agent', detail: 'Software name, e.g. /Satoshi:26.1.0/ is Bitcoin Core 26.1.' },
-      { name: 'height', detail: 'The peer\'s current block height — how synced they are.' },
-    ],
-  },
-  {
-    cmd: 'verack',
-    color: 'green',
-    title: 'Version Acknowledge',
-    description: 'The peer is confirming it received your version message. Once both sides send verack, the Bitcoin handshake is complete and you are officially a network participant.',
-    fields: [],
-  },
-  {
-    cmd: 'ping',
-    color: 'cyan',
-    title: 'Keepalive Ping',
-    description: 'The peer is checking if you are still alive. Your app automatically reads the nonce and echoes it back as a pong. If you do not reply, the peer will eventually disconnect you.',
-    fields: [
-      { name: 'nonce', detail: 'A random 8-byte number. You must echo this exact value back in your pong.' },
-    ],
-  },
-  {
-    cmd: 'pong',
-    color: 'cyan',
-    title: 'Keepalive Pong',
-    description: 'Your app sent a pong in response to a ping. This confirms your connection is still alive.',
-    fields: [],
-  },
-  {
-    cmd: 'sendcmpct',
-    color: 'blue',
-    title: 'Compact Block Negotiation',
-    description: 'The peer supports compact block relay (BIP 152). Instead of sending entire blocks, it sends a compressed version assuming you already have most transactions. Saves bandwidth.',
-    fields: [],
-  },
-  {
-    cmd: 'feefilter',
-    color: 'orange',
-    title: 'Fee Filter',
-    description: 'The peer is telling you its minimum fee rate threshold. It will silently ignore any transactions you send with a fee rate below this value — a spam protection mechanism (BIP 133).',
-    fields: [
-      { name: 'fee', detail: 'Minimum fee in satoshis per kilobyte. 1000 sat/kB = ~1 sat/byte.' },
-    ],
-  },
-  {
-    cmd: 'addr',
-    color: 'yellow',
-    title: 'Peer Address List',
-    description: 'The peer is sharing a list of other Bitcoin nodes it knows about. This is how peer discovery works — like a phonebook of the network. Your app requested this with a getaddr message after the handshake.',
-    fields: [
-      { name: 'count', detail: 'Number of node addresses included. Can be up to 1000.' },
-    ],
-  },
-  {
-    cmd: 'inv',
-    color: 'teal',
-    title: 'Inventory Announcement',
-    description: 'The peer is announcing new items it has — either new transactions or new blocks. Think of it as a newspaper headline. You can then send a getdata to request the full content.',
-    fields: [
-      { name: 'type', detail: 'Item type: 1=Transaction, 2=Block, 0x40000001=SegWit Transaction.' },
-      { name: 'hash', detail: 'The unique identifier (TXID or block hash) of the announced item.' },
-    ],
-  },
-  {
-    cmd: 'tx',
-    color: 'green',
-    title: 'Transaction Data',
-    description: 'The peer sent you a full transaction in response to your getdata request. Your app parses it and displays inputs, outputs, total BTC, and locktime in the Transaction Modal.',
-    fields: [
-      { name: 'txid', detail: 'The transaction\'s unique ID (double-SHA256 of the raw bytes, reversed).' },
-      { name: 'inputs', detail: 'Which previous transaction outputs are being spent.' },
-      { name: 'outputs', detail: 'Where the BTC is going. Each has a value and a locking script.' },
-    ],
-  },
-  {
-    cmd: 'block',
-    color: 'red',
-    title: 'Block Data',
-    description: 'A full block containing many transactions. Contains an 80-byte header (version, previous block hash, merkle root, timestamp, difficulty target, nonce) plus all transaction data.',
-    fields: [],
-  },
-  {
-    cmd: 'getdata',
-    color: 'blue',
-    title: 'Data Request (Outgoing)',
-    description: 'Your app sent this to the peer requesting a specific transaction. This is the message sent when you click "Fetch Transaction". The peer responds with a tx message if it has it, or a notfound message if it does not.',
-    fields: [],
-  },
-  {
-    cmd: 'notfound',
-    color: 'red',
-    title: 'Not Found',
-    description: 'The peer does not have the item you requested. This usually means the transaction is already confirmed in a block and is no longer in the peer\'s mempool. Peers only keep unconfirmed transactions unless they have a full transaction index enabled.',
-    fields: [],
-  },
-  {
-    cmd: 'reject',
-    color: 'red',
-    title: 'Message Rejected',
-    description: 'The peer explicitly rejected something you sent. This could be a transaction with an invalid signature, insufficient fee, or a duplicate. Contains an error code and reason string.',
-    fields: [],
-  },
+  { cmd: 'version', color: 'purple', title: 'Version Handshake', description: 'The peer introduces itself. Contains its software version, supported features, block height, and a nonce.', fields: [{ name: 'version', detail: 'Protocol version (e.g. 70016).' }, { name: 'user_agent', detail: 'Software name, e.g. /Satoshi:26.1.0/' }, { name: 'height', detail: "The peer's current block height." }] },
+  { cmd: 'verack', color: 'green', title: 'Version Acknowledge', description: 'Confirms the handshake. Once both sides send verack, you are officially a network participant.', fields: [] },
+  { cmd: 'ping', color: 'cyan', title: 'Keepalive Ping', description: 'The peer checks if you are still alive. Your app echoes the nonce back as a pong automatically.', fields: [{ name: 'nonce', detail: 'A random 8-byte number echoed back in the pong.' }] },
+  { cmd: 'pong', color: 'cyan', title: 'Keepalive Pong', description: 'Your app replied to a ping. The connection is confirmed alive.', fields: [] },
+  { cmd: 'sendcmpct', color: 'blue', title: 'Compact Block Negotiation', description: 'The peer supports compact block relay (BIP 152) for bandwidth savings.', fields: [] },
+  { cmd: 'feefilter', color: 'orange', title: 'Fee Filter', description: "The peer's minimum fee rate. It will ignore transactions below this threshold (BIP 133).", fields: [{ name: 'fee', detail: 'Minimum fee in sat/kB. 1000 = ~1 sat/byte.' }] },
+  { cmd: 'addr', color: 'yellow', title: 'Peer Address List', description: 'A list of other Bitcoin nodes the peer knows about — the network phonebook.', fields: [{ name: 'count', detail: 'Number of addresses. Up to 1000.' }] },
+  { cmd: 'inv', color: 'teal', title: 'Inventory Announcement', description: 'The peer announces new transactions or blocks it has. Like a headline — you send getdata to get the full content.', fields: [{ name: 'type', detail: '1=TX, 2=Block, 0x40000001=SegWit TX' }, { name: 'hash', detail: 'TXID or block hash of the announced item.' }] },
+  { cmd: 'tx', color: 'green', title: 'Transaction Data', description: 'A full raw transaction sent by the peer.', fields: [] },
+  { cmd: 'block', color: 'red', title: 'Block Data', description: 'A full block — 80-byte header plus all transaction data.', fields: [] },
+  { cmd: 'notfound', color: 'red', title: 'Not Found', description: "The peer doesn't have the item you requested. Usually because the transaction is confirmed and no longer in the mempool.", fields: [] },
+  { cmd: 'reject', color: 'red', title: 'Message Rejected', description: 'The peer rejected something you sent — invalid signature, insufficient fee, or duplicate.', fields: [] },
 ];
 
 function App() {
   const [showSplash, setShowSplash] = useState(true);
 
+  // Connection state
   const [status, setStatus] = useState('offline');
   const [statusText, setStatusText] = useState('Disconnected');
   const [peerAddress, setPeerAddress] = useState('—');
   const [peerInfo, setPeerInfo] = useState({ agent: '—', height: '—', version: '—', services: '—' });
 
+  // Message log
   const [messages, setMessages] = useState([]);
   const [messageCount, setMessageCount] = useState(0);
   const logEndRef = useRef(null);
 
+  // Transaction lookup (via mempool.space API)
   const [txidInput, setTxidInput] = useState('');
   const [isFetchingTx, setIsFetchingTx] = useState(false);
   const [txData, setTxData] = useState(null);
+  const [txError, setTxError] = useState(null);
 
+  // Mempool (via mempool.space API)
   const [isFetchingMempool, setIsFetchingMempool] = useState(false);
-  const [mempoolData, setMempoolData] = useState(null);
+  const [mempoolTxids, setMempoolTxids] = useState([]);
+  const [mempoolStats, setMempoolStats] = useState(null);
 
+  // Modals
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
 
   const isConnected = status === 'online';
 
-  // ── Splash screen timer ───────────────────────────────────────────────────
+  // Splash timer
   useEffect(() => {
-    const timer = setTimeout(() => setShowSplash(false), 2800);
-    return () => clearTimeout(timer);
+    const t = setTimeout(() => setShowSplash(false), 2800);
+    return () => clearTimeout(t);
   }, []);
 
-  // ── Event listeners ───────────────────────────────────────────────────────
+  // P2P Event listeners (connection + live log only)
   useEffect(() => {
-    let unlistenConnection;
-    let unlistenPeerInfo;
-    let unlistenBitcoinMsg;
-    let unlistenTx;
-    let unlistenMempool;
-    let unlistenNotfound;
+    let unlistenConnection, unlistenPeerInfo, unlistenBitcoinMsg;
 
     async function setupListeners() {
       unlistenConnection = await listen('connection-status', (event) => {
-        const { status: newStatus, message, peerAddress: peer } = event.payload;
-        if (newStatus === 'handshake_complete') {
-          setStatus('online');
-          setStatusText('Connected');
-        } else if (newStatus === 'connecting') {
-          setStatus('connecting');
-          setStatusText(message);
-          if (peer) setPeerAddress(peer);
-        } else if (newStatus === 'disconnected') {
-          setStatus('offline');
-          setStatusText('Disconnected');
-        } else if (newStatus === 'error') {
-          setStatus('error');
-          setStatusText('Error: ' + message);
-        }
+        const { status: s, message, peerAddress: peer } = event.payload;
+        if (s === 'handshake_complete') { setStatus('online'); setStatusText('Connected'); }
+        else if (s === 'connecting') { setStatus('connecting'); setStatusText(message); if (peer) setPeerAddress(peer); }
+        else if (s === 'disconnected') { setStatus('offline'); setStatusText('Disconnected'); setPeerAddress('—'); setPeerInfo({ agent: '—', height: '—', version: '—', services: '—' }); }
+        else if (s === 'error') { setStatus('error'); setStatusText('Error: ' + message); }
       });
 
       unlistenPeerInfo = await listen('peer-info', (event) => {
@@ -185,103 +82,76 @@ function App() {
         setMessageCount(messageNumber);
         setMessages(prev => [...prev, { id: messageNumber, command, summary }]);
       });
-
-      unlistenTx = await listen('transaction-decoded', (event) => {
-        setTxData(event.payload);
-        setIsFetchingTx(false);
-        setIsModalOpen(true);
-      });
-
-      unlistenNotfound = await listen('transaction-notfound', () => {
-        alert('Transaction not found! The peer does not have this TX in its mempool.');
-        setIsFetchingTx(false);
-      });
-
-      unlistenMempool = await listen('mempool-snapshot', (event) => {
-        setMempoolData(event.payload);
-        setIsFetchingMempool(false);
-      });
     }
 
     setupListeners();
-
     return () => {
       if (unlistenConnection) unlistenConnection();
       if (unlistenPeerInfo) unlistenPeerInfo();
       if (unlistenBitcoinMsg) unlistenBitcoinMsg();
-      if (unlistenTx) unlistenTx();
-      if (unlistenMempool) unlistenMempool();
-      if (unlistenNotfound) unlistenNotfound();
     };
   }, []);
 
   // Auto-scroll log
   useEffect(() => {
-    if (logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
+    if (logEndRef.current) logEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // ── Handlers ────────────────────────────────────────────────────────────────
   const handleConnect = async () => {
-    setStatus('connecting');
-    setStatusText('Connecting...');
-    try {
-      await invoke('connect');
-    } catch (err) {
-      setStatus('error');
-      setStatusText('Error: ' + err);
-    }
+    setStatus('connecting'); setStatusText('Connecting...');
+    try { await invoke('connect'); }
+    catch (err) { setStatus('error'); setStatusText('Error: ' + err); }
   };
 
   const handleDisconnect = async () => {
-    try {
-      await invoke('disconnect');
-      setStatus('offline');
-      setStatusText('Disconnected');
-    } catch (err) {
-      console.error('Disconnect error:', err);
-    }
+    try { await invoke('disconnect'); setStatus('offline'); setStatusText('Disconnected'); }
+    catch (err) { console.error(err); }
   };
 
   const handleFetchTx = async () => {
     const txid = txidInput.trim();
-    if (txid.length !== 64) {
-      alert('Please enter a valid 64-character TXID');
-      return;
-    }
+    if (txid.length !== 64) { alert('Please enter a valid 64-character TXID'); return; }
     setIsFetchingTx(true);
-    setMessages(prev => [...prev, {
-      id: 'out-' + Date.now(),
-      command: 'getdata',
-      summary: `Requested TX ${txid.substring(0, 16)}...`
-    }]);
+    setTxData(null);
+    setTxError(null);
     try {
-      await invoke('request_tx', { txid_hex: txid });
-      setTimeout(() => {
-        setIsFetchingTx(prev => {
-          if (prev) alert("Request timed out! The peer ignored us — it likely doesn't have this transaction in its mempool.");
-          return false;
-        });
-      }, 5000);
+      const res = await fetch(`${MEMPOOL_API}/tx/${txid}`);
+      if (!res.ok) {
+        const msg = res.status === 404
+          ? 'Transaction not found. It may not have been broadcast yet or the TXID is incorrect.'
+          : `API error: ${res.status}`;
+        setTxError(msg);
+        setIsModalOpen(true);
+      } else {
+        const data = await res.json();
+        setTxData(data);
+        setIsModalOpen(true);
+      }
     } catch (err) {
-      alert('Error: ' + err);
+      setTxError('Could not reach mempool.space. Check your internet connection.');
+      setIsModalOpen(true);
+    } finally {
       setIsFetchingTx(false);
     }
   };
 
   const handleFetchMempool = async () => {
     setIsFetchingMempool(true);
+    setMempoolTxids([]);
+    setMempoolStats(null);
     try {
-      await invoke('request_mempool');
+      const [txidsRes, statsRes] = await Promise.all([
+        fetch(`${MEMPOOL_API}/mempool/txids`),
+        fetch(`${MEMPOOL_API}/mempool`),
+      ]);
+      if (txidsRes.ok) setMempoolTxids(await txidsRes.json());
+      if (statsRes.ok) setMempoolStats(await statsRes.json());
     } catch (err) {
-      alert('Error: ' + err);
+      alert('Could not reach mempool.space. Check your internet connection.');
+    } finally {
       setIsFetchingMempool(false);
     }
-  };
-
-  const handleClearLog = () => {
-    setMessages([]);
-    setMessageCount(0);
   };
 
   const handleMempoolRowClick = (txid) => {
@@ -289,7 +159,22 @@ function App() {
     document.getElementById('txid-input')?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // ── Splash Screen ─────────────────────────────────────────────────────────
+  const handleClearLog = () => { setMessages([]); setMessageCount(0); };
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  const satsToTBTC = (sats) => (sats / 1e8).toFixed(8);
+
+  const formatInput = (inp) => {
+    if (inp.is_coinbase) return 'COINBASE (block reward)';
+    return `${inp.txid.substring(0, 16)}... → output #${inp.vout}`;
+  };
+
+  const formatOutput = (out) => {
+    const addr = out.scriptpubkey_address || out.scriptpubkey_type || 'unknown';
+    return `${satsToTBTC(out.value)} tBTC → ${addr}`;
+  };
+
+  // ── Splash ──────────────────────────────────────────────────────────────────
   if (showSplash) {
     return (
       <div className="splash">
@@ -297,19 +182,17 @@ function App() {
           <div className="splash-icon">⬡</div>
           <h1 className="splash-title">Cthulhu</h1>
           <p className="splash-subtitle">Bitcoin P2P Network Observer</p>
-          <div className="splash-loader">
-            <div className="splash-loader-bar" />
-          </div>
+          <div className="splash-loader"><div className="splash-loader-bar" /></div>
           <p className="splash-network">Testnet3</p>
         </div>
       </div>
     );
   }
 
-  // ── Main App ──────────────────────────────────────────────────────────────
+  // ── Main App ─────────────────────────────────────────────────────────────────
   return (
     <>
-      {/* ── Top bar ── */}
+      {/* Top bar */}
       <header className="topbar">
         <div className="topbar-left">
           <span className="logo">⬡</span>
@@ -326,11 +209,11 @@ function App() {
         </div>
       </header>
 
-      {/* ── Main layout ── */}
+      {/* Layout */}
       <div className="layout">
-
-        {/* Left sidebar */}
+        {/* Sidebar */}
         <aside className="sidebar">
+          {/* Peer info */}
           <div className="card">
             <div className="card-title">Peer Info</div>
             <div className="info-row"><span className="label">Address</span><span>{peerAddress}</span></div>
@@ -341,8 +224,10 @@ function App() {
             <div className="info-row"><span className="label">Messages</span><span>{messageCount}</span></div>
           </div>
 
+          {/* TX Lookup */}
           <div className="card">
             <div className="card-title">Look Up Transaction</div>
+            <p className="hint">Works for any transaction — confirmed or unconfirmed — via mempool.space.</p>
             <input
               id="txid-input"
               className="text-input"
@@ -351,30 +236,42 @@ function App() {
               value={txidInput}
               onChange={(e) => setTxidInput(e.target.value)}
             />
-            <button className="btn btn-primary full-width" onClick={handleFetchTx} disabled={!isConnected || isFetchingTx || txidInput.trim().length !== 64}>
-              {isFetchingTx ? 'Requesting...' : 'Fetch Transaction'}
+            <button
+              className="btn btn-primary full-width"
+              onClick={handleFetchTx}
+              disabled={isFetchingTx || txidInput.trim().length !== 64}
+            >
+              {isFetchingTx ? 'Fetching...' : 'Fetch Transaction'}
             </button>
           </div>
 
+          {/* Mempool */}
           <div className="card">
             <div className="card-title">Mempool Snapshot</div>
-            <p className="hint">Request all unconfirmed transactions currently in the peer's mempool.</p>
-            <button className="btn btn-secondary full-width" onClick={handleFetchMempool} disabled={!isConnected || isFetchingMempool}>
-              {isFetchingMempool ? 'Waiting for response...' : 'Fetch Mempool'}
+            <p className="hint">Fetches all unconfirmed transactions via mempool.space — reliable and instant.</p>
+            {mempoolStats && (
+              <div className="mempool-stats-row">
+                <div className="mempool-stat"><div className="mempool-stat-val">{mempoolStats.count?.toLocaleString()}</div><div className="mempool-stat-lbl">TXs</div></div>
+                <div className="mempool-stat"><div className="mempool-stat-val">{(mempoolStats.vsize / 1e6).toFixed(1)}MB</div><div className="mempool-stat-lbl">Size</div></div>
+                <div className="mempool-stat"><div className="mempool-stat-val">{(mempoolStats.total_fee / 1e8).toFixed(4)}</div><div className="mempool-stat-lbl">Fees (tBTC)</div></div>
+              </div>
+            )}
+            <button className="btn btn-secondary full-width" onClick={handleFetchMempool} disabled={isFetchingMempool}>
+              {isFetchingMempool ? 'Loading...' : 'Fetch Mempool'}
             </button>
-            {mempoolData && <div className="mempool-count">{mempoolData.totalCount.toLocaleString()} unconfirmed TXs found</div>}
           </div>
         </aside>
 
-        {/* Right main */}
+        {/* Main content */}
         <main className="main-content">
+          {/* Live log */}
           <div className="card flex-card">
             <div className="card-title">
-              Live Message Log
+              Live P2P Message Log
               <button className="btn btn-ghost btn-small" onClick={handleClearLog}>Clear</button>
             </div>
             <div className="message-log">
-              {messages.length === 0 && <div className="log-placeholder">Connect to a peer to see live Bitcoin P2P messages...</div>}
+              {messages.length === 0 && <div className="log-placeholder">Connect to a peer to watch live Bitcoin P2P messages...</div>}
               {messages.map(msg => (
                 <div key={msg.id} className="log-entry">
                   <span className="log-num">#{String(msg.id).padStart(4, '0')}</span>
@@ -386,18 +283,22 @@ function App() {
             </div>
           </div>
 
-          {mempoolData && (
+          {/* Mempool table */}
+          {mempoolTxids.length > 0 && (
             <div className="card">
-              <div className="card-title">Mempool — <span>{mempoolData.totalCount.toLocaleString()}</span> unconfirmed transactions</div>
+              <div className="card-title">Mempool — {mempoolTxids.length.toLocaleString()} unconfirmed transactions</div>
               <div className="mempool-table">
-                {mempoolData.txids.map(txid => (
+                {mempoolTxids.slice(0, 50).map(txid => (
                   <div key={txid} className="mempool-row" title="Click to load into lookup" onClick={() => handleMempoolRowClick(txid)}>
                     {txid}
                   </div>
                 ))}
               </div>
-              <div className="hint" style={{ marginTop: '8px' }}>
-                Tip: look up any of these on <a href="https://mempool.space/testnet" target="_blank" rel="noreferrer">mempool.space/testnet</a>
+              {mempoolTxids.length > 50 && (
+                <div className="hint" style={{ marginTop: '8px' }}>Showing 50 of {mempoolTxids.length.toLocaleString()} transactions.</div>
+              )}
+              <div className="hint" style={{ marginTop: '6px' }}>
+                Click any TXID to load it, then click Fetch Transaction to see full details.
               </div>
             </div>
           )}
@@ -405,38 +306,67 @@ function App() {
       </div>
 
       {/* ── Transaction Modal ── */}
-      {isModalOpen && txData && (
+      {isModalOpen && (
         <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <div className="modal-title">Transaction Details</div>
-                <div className="modal-subtitle">Fetched from node: {txData.fetchedFrom || peerAddress}</div>
+                <div className="modal-subtitle">Source: mempool.space Testnet API</div>
               </div>
               <button className="modal-close" onClick={() => setIsModalOpen(false)}>×</button>
             </div>
             <div className="modal-body">
-              <div className="tx-header">
-                <div className="tx-txid">{txData.txid}</div>
-                <div className="tx-badges">
-                  <span className="badge">v{txData.version}</span>
-                  {txData.isSegwit && <span className="badge badge-blue">SegWit</span>}
+              {txError ? (
+                <div className="tx-error">
+                  <div className="tx-error-icon">⚠</div>
+                  <div className="tx-error-msg">{txError}</div>
                 </div>
-              </div>
-              <div className="tx-stats">
-                <div className="stat"><div className="stat-value">{txData.inputCount}</div><div className="stat-label">Inputs</div></div>
-                <div className="stat"><div className="stat-value">{txData.outputCount}</div><div className="stat-label">Outputs</div></div>
-                <div className="stat"><div className="stat-value">{(txData.totalOutputSats / 1e8).toFixed(8)} BTC</div><div className="stat-label">Total BTC</div></div>
-                <div className="stat"><div className="stat-value">{txData.locktime}</div><div className="stat-label">Locktime</div></div>
-              </div>
-              <div className="tx-section-title">Inputs</div>
-              <div className="tx-list">
-                {txData.inputs.map((inp, i) => <div key={i} className="tx-row">{inp}</div>)}
-              </div>
-              <div className="tx-section-title">Outputs</div>
-              <div className="tx-list">
-                {txData.outputs.map((out, i) => <div key={i} className="tx-row">{out}</div>)}
-              </div>
+              ) : txData ? (
+                <>
+                  {/* TXID + status */}
+                  <div className="tx-header">
+                    <div className="tx-txid">{txData.txid}</div>
+                    <div className="tx-badges">
+                      <span className="badge">v{txData.version}</span>
+                      {txData.status?.confirmed
+                        ? <span className="badge badge-green">✓ Confirmed — Block #{txData.status.block_height}</span>
+                        : <span className="badge badge-orange">⏳ Unconfirmed</span>
+                      }
+                    </div>
+                  </div>
+
+                  {/* Stats */}
+                  <div className="tx-stats">
+                    <div className="stat"><div className="stat-value">{txData.vin?.length}</div><div className="stat-label">Inputs</div></div>
+                    <div className="stat"><div className="stat-value">{txData.vout?.length}</div><div className="stat-label">Outputs</div></div>
+                    <div className="stat"><div className="stat-value">{txData.fee?.toLocaleString()}</div><div className="stat-label">Fee (sats)</div></div>
+                    <div className="stat"><div className="stat-value">{txData.size}</div><div className="stat-label">Bytes</div></div>
+                  </div>
+
+                  {/* Inputs */}
+                  <div className="tx-section-title">Inputs</div>
+                  <div className="tx-list">
+                    {txData.vin?.map((inp, i) => (
+                      <div key={i} className="tx-row">
+                        <div className="tx-row-label">{formatInput(inp)}</div>
+                        {inp.prevout && <div className="tx-row-value">{satsToTBTC(inp.prevout.value)} tBTC · {inp.prevout.scriptpubkey_type}</div>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Outputs */}
+                  <div className="tx-section-title">Outputs</div>
+                  <div className="tx-list">
+                    {txData.vout?.map((out, i) => (
+                      <div key={i} className="tx-row">
+                        <div className="tx-row-label">{out.scriptpubkey_address || out.scriptpubkey_type}</div>
+                        <div className="tx-row-value">{satsToTBTC(out.value)} tBTC</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
@@ -447,58 +377,30 @@ function App() {
         <div className="modal-overlay" onClick={() => setIsAboutOpen(false)}>
           <div className="modal-content about-modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div>
-                <div className="modal-title">About Cthulhu</div>
-                <div className="modal-subtitle">Bitcoin P2P Network Observer</div>
-              </div>
+              <div><div className="modal-title">About Cthulhu</div><div className="modal-subtitle">Bitcoin P2P Network Observer</div></div>
               <button className="modal-close" onClick={() => setIsAboutOpen(false)}>×</button>
             </div>
             <div className="modal-body">
               <div className="about-logo-row">
                 <span className="about-icon">⬡</span>
-                <div>
-                  <div className="about-app-name">Cthulhu</div>
-                  <div className="about-version">v0.1.0 — Testnet3</div>
-                </div>
+                <div><div className="about-app-name">Cthulhu</div><div className="about-version">v0.1.0 — Testnet3</div></div>
               </div>
-
-              <p className="about-text">
-                Cthulhu is a low-level Bitcoin P2P network observer built with Rust and React.
-                It connects directly to a Bitcoin Testnet node over a raw TCP socket — no API,
-                no middleman — and lets you watch the real Bitcoin peer-to-peer protocol in action.
-              </p>
-
-              <div className="about-section-title">What it does</div>
+              <p className="about-text">Cthulhu is a Bitcoin Testnet P2P observer built with Rust and React. It connects directly to a Bitcoin node over a raw TCP socket and lets you watch the Bitcoin peer-to-peer protocol in real-time. Transaction and mempool data is fetched from the mempool.space API for reliability.</p>
+              <div className="about-section-title">Features</div>
               <ul className="about-list">
-                <li>🔗 Connects to a live Testnet peer via DNS seed discovery</li>
-                <li>🤝 Performs the full Bitcoin version/verack handshake</li>
-                <li>📡 Streams every incoming P2P message in real-time</li>
-                <li>🔍 Fetches and decodes unconfirmed transactions from the mempool</li>
-                <li>📸 Takes a mempool snapshot showing all pending transactions</li>
-                <li>🧬 Parses both Legacy and SegWit transaction formats</li>
+                <li>🔗 Connects to live Testnet peers via DNS seed discovery</li>
+                <li>🤝 Full Bitcoin version/verack handshake</li>
+                <li>📡 Real-time P2P message stream</li>
+                <li>🔍 Transaction lookup for any TX (confirmed or unconfirmed)</li>
+                <li>📸 Mempool snapshot with live unconfirmed transactions</li>
               </ul>
-
-              <div className="about-section-title">How it works</div>
-              <p className="about-text">
-                The Rust backend runs a Bitcoin P2P client on a background thread so the UI
-                never freezes. It emits structured events across the Tauri bridge, which React
-                receives and renders in real-time. All Bitcoin wire-format parsing — VarInts,
-                CompactSize, SegWit marker bytes — is implemented from scratch in Rust.
-              </p>
-
               <div className="about-section-title">Tech Stack</div>
               <div className="about-tags">
-                <span className="about-tag">Rust</span>
-                <span className="about-tag">Tauri</span>
-                <span className="about-tag">React</span>
-                <span className="about-tag">Vite</span>
-                <span className="about-tag">Bitcoin P2P</span>
-                <span className="about-tag">Testnet3</span>
+                {['Rust', 'Tauri', 'React', 'Vite', 'Bitcoin P2P', 'Testnet3', 'mempool.space'].map(t => (
+                  <span key={t} className="about-tag">{t}</span>
+                ))}
               </div>
-
-              <div className="about-footer">
-                Built with ❤️ — Raw Bitcoin. No shortcuts.
-              </div>
+              <div className="about-footer">Built with ❤️ — Raw Bitcoin. No shortcuts.</div>
             </div>
           </div>
         </div>
@@ -509,10 +411,7 @@ function App() {
         <div className="modal-overlay" onClick={() => setIsGuideOpen(false)}>
           <div className="modal-content guide-modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div>
-                <div className="modal-title">Bitcoin P2P Message Guide</div>
-                <div className="modal-subtitle">What every message in the live log means</div>
-              </div>
+              <div><div className="modal-title">Bitcoin P2P Message Guide</div><div className="modal-subtitle">What every message in the live log means</div></div>
               <button className="modal-close" onClick={() => setIsGuideOpen(false)}>×</button>
             </div>
             <div className="modal-body">
