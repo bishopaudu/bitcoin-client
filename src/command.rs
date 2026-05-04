@@ -13,8 +13,8 @@
 // Tauri injects it automatically — you don't pass it from JS.
 
 use tauri::{AppHandle, State};
-use std::sync::{Arc, Mutex};
-use crate::node::{NodeState, SharedState, run_bitcoin_node};
+use std::sync::Arc;
+use crate::node::{SharedState, run_bitcoin_node};
 use crate::message::MAGIC_TESTNET;
 use crate::peer::send_message;
 

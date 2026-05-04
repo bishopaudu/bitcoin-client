@@ -46,6 +46,7 @@ html, body, #root { height: 100%; width: 100%; background: var(--bg); color: var
 .dot-online   { background: var(--green); }
 .dot-error    { background: var(--red); }
 #status-text  { font-size: 12px; color: var(--text2); min-width: 90px; }
+.peer-ip      { font-family: var(--mono); color: var(--text); opacity: 0.8; margin-left: 4px; }
 
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
 
@@ -140,6 +141,48 @@ html, body, #root { height: 100%; width: 100%; background: var(--bg); color: var
 .log-num   { color: var(--text2); }
 .log-cmd   { font-weight: 600; }
 .log-sum   { color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Log Grid ── */
+.log-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; flex: 1; min-height: 0; }
+.log-grid .card { min-height: 0; }
+
+/* ── Network Activity (inv feed) ── */
+.network-stats { font-size: 10px; color: var(--text2); background: var(--bg3); padding: 2px 6px; border-radius: 10px; font-weight: normal; }
+.inv-feed {
+  display: flex; flex-direction: column; gap: 4px;
+  overflow-y: auto; flex: 1; font-family: var(--mono); font-size: 11px;
+}
+.inv-entry {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 4px; background: var(--bg3);
+  animation: slideIn 0.3s ease-out forwards;
+}
+.inv-tx { border-left: 2px solid var(--text2); cursor: pointer; transition: all 0.2s; }
+.inv-tx:hover { background: var(--bg2); border-left-color: var(--blue); color: var(--blue); }
+
+.inv-block {
+  border: 1px solid var(--orange);
+  background: rgba(247, 147, 26, 0.1);
+  color: var(--orange);
+  box-shadow: 0 0 8px rgba(247, 147, 26, 0.3);
+  animation: slideIn 0.3s ease-out forwards, pulseBlock 2s infinite;
+}
+
+.inv-type { font-weight: bold; width: 50px; }
+.inv-hash { flex: 1; color: var(--text); }
+.inv-tx:hover .inv-hash { color: var(--blue); }
+.inv-block .inv-hash { color: var(--orange); }
+.inv-time { color: var(--text2); font-size: 10px; text-align: right; }
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes pulseBlock {
+  0% { box-shadow: 0 0 4px rgba(247, 147, 26, 0.2); }
+  50% { box-shadow: 0 0 12px rgba(247, 147, 26, 0.5); }
+  100% { box-shadow: 0 0 4px rgba(247, 147, 26, 0.2); }
+}
 
 /* Command colours */
 .cmd-version   { color: var(--purple); }

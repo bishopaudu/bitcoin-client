@@ -27,8 +27,7 @@ use crate::message::MAGIC_TESTNET;
 use crate::encoding::decode_varint;
 use crate::crypto::{double_sha256, hex_encode};
 use crate::version::decode_version_payload;
-use crate::transaction::{parse_transaction, decode_and_display_tx, request_transaction};
-use crate::mempool;
+use crate::transaction::parse_transaction;
 
 // ── Event structs ─────────────────────────────────────────────────────────────
 //
@@ -118,6 +117,27 @@ pub struct MempoolEvent {
     pub total_count: u64,
     // The first N txids (in display order) for showing in the table
     pub txids: Vec<String>,
+}
+
+// ── Live Inventory Activity (inv) ──────────────────────────────────────────────
+//
+// Sent to the UI whenever the peer announces new network activity.
+// This drives the real-time "Network Activity" feed.
+
+// Represents a single item inside an `inv` announcement
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InvItem {
+    pub item_type: String, // "TX" or "BLOCK"
+    pub hash: String,      // 64-character hex string (TXID or Block Hash)
+}
+
+// The full announcement containing one or more items
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InvAnnouncement {
+    pub items: Vec<InvItem>,
+    pub timestamp: u64, // Unix timestamp (in ms) to help React with relative time
 }
 
 // ── Shared application state ──────────────────────────────────────────────────
@@ -267,8 +287,8 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
 
     // ── Step 4: Message loop ──────────────────────────────────────────────
     let mut message_count: u64 = 0;
-    let mut handshake_done = false;
-    let mut got_their_version = false;
+    let mut _handshake_done = false;
+    let mut _got_their_version = false;
 
     loop {
         // Check if we should stop (set by the "disconnect" command)
@@ -312,7 +332,7 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
         let summary = match msg.command.as_str() {
 
             "version" => {
-                got_their_version = true;
+                _got_their_version = true;
                 // Send verack immediately
                 let _ = send_message(&mut my_stream, "verack", &[], magic);
 
@@ -330,7 +350,7 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
             }
 
             "verack" => {
-                handshake_done = true;
+                _handshake_done = true;
                 if let Ok(mut s) = state.lock() {
                     s.is_connected = true;
                 }
@@ -410,10 +430,13 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
 
                     format!("MEMPOOL SNAPSHOT: {} unconfirmed transactions", txids.len())
                 } else {
-                    // Regular live inv — collect and display items
-                    let mut items = Vec::new();
+                    // Regular live inv — collect items to emit to UI feed
+                    let mut items = Vec::new();       // For the short string summary
+                    let mut event_items = Vec::new(); // For the new rich InvAnnouncement
                     let mut local_off = off;
-                    for _ in 0..count.min(5) {
+                    
+                    // Parse all items in the inv message
+                    for i in 0..count {
                         if local_off + 36 > msg.payload.len() { break; }
                         let inv_type = u32::from_le_bytes(
                             msg.payload[local_off..local_off+4].try_into().unwrap()
@@ -422,11 +445,41 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                         hash.copy_from_slice(&msg.payload[local_off+4..local_off+36]);
                         local_off += 36;
                         hash.reverse();
+                        
+                        // Parse type (handle SegWit types 0x40000001 and 0x40000002)
                         let type_str = match inv_type {
-                            1 => "TX", 2 => "BLOCK", _ => "OTHER"
+                            1 | 0x40000001 => "TX",
+                            2 | 0x40000002 => "BLOCK",
+                            _ => "OTHER"
                         };
-                        items.push(format!("{} {}...", type_str, &hex_encode(&hash)[..16]));
+                        
+                        let hash_hex = hex_encode(&hash);
+                        
+                        // Build short summary string for the log (only first 5 items)
+                        if i < 5 {
+                            items.push(format!("{} {}...", type_str, &hash_hex[..16]));
+                        }
+                        
+                        // Collect items for the real-time activity feed.
+                        // Cap at 100 items per event to prevent UI lag on huge announcements.
+                        if event_items.len() < 100 {
+                            event_items.push(InvItem {
+                                item_type: type_str.to_string(),
+                                hash: hash_hex,
+                            });
+                        }
                     }
+                    
+                    // Emit the new real-time network activity event to React
+                    let _ = app_handle.emit_all("inv-announcement", InvAnnouncement {
+                        items: event_items,
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    });
+
+                    // Return the short summary string for the Live Message Log
                     let suffix = if count > 5 {
                         format!(" (+{} more)", count - 5)
                     } else {
@@ -445,7 +498,7 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                 // Parse the transaction and emit a structured event for the UI
                 txid.reverse(); // un-reverse for internal use in parse
                 if let Ok(tx) = parse_transaction(&msg.payload) {
-                    let mut inputs_display: Vec<String> = tx.inputs.iter().map(|inp| {
+                    let inputs_display: Vec<String> = tx.inputs.iter().map(|inp| {
                         let is_coinbase = inp.prev_txid == [0u8; 32]
                             && inp.prev_index == 0xFFFF_FFFF;
                         if is_coinbase {
@@ -528,7 +581,7 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                 let (count, _) = decode_varint(&msg.payload, 0).unwrap_or((0,0));
                 format!("peer does not have {} requested item(s)", count)
             },
-            other          => format!("({} bytes payload)", msg.payload.len()),
+            _other          => format!("({} bytes payload)", msg.payload.len()),
         };
 
         // ── Always emit a MessageEvent for the live log ───────────────────

@@ -3,6 +3,15 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
 import './App.css';
 
+// Components
+import Topbar from './components/Topbar';
+import Sidebar from './components/Sidebar';
+import LiveMessageLog from './components/LiveMessageLog';
+import LiveNetworkActivity from './components/LiveNetworkActivity';
+import TransactionModal from './components/Modals/TransactionModal';
+import AboutModal from './components/Modals/AboutModal';
+import MessageGuideModal from './components/Modals/MessageGuideModal';
+
 const MEMPOOL_API = 'https://mempool.space/testnet/api';
 
 // ── Message Guide Data ────────────────────────────────────────────────────────
@@ -46,6 +55,11 @@ function App() {
   const [mempoolTxids, setMempoolTxids] = useState([]);
   const [mempoolStats, setMempoolStats] = useState(null);
 
+  // Live Inv Feed
+  const [invFeed, setInvFeed] = useState([]);
+  const [txSeenCount, setTxSeenCount] = useState(0);
+  const [blockSeenCount, setBlockSeenCount] = useState(0);
+
   // Modals
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
@@ -59,9 +73,9 @@ function App() {
     return () => clearTimeout(t);
   }, []);
 
-  // P2P Event listeners (connection + live log only)
+  // P2P Event listeners
   useEffect(() => {
-    let unlistenConnection, unlistenPeerInfo, unlistenBitcoinMsg;
+    let unlistenConnection, unlistenPeerInfo, unlistenBitcoinMsg, unlistenInv;
 
     async function setupListeners() {
       unlistenConnection = await listen('connection-status', (event) => {
@@ -82,6 +96,34 @@ function App() {
         setMessageCount(messageNumber);
         setMessages(prev => [...prev, { id: messageNumber, command, summary }]);
       });
+      
+      unlistenInv = await listen('inv-announcement', (event) => {
+        const { items, timestamp } = event.payload;
+        
+        let newTxs = 0;
+        let newBlocks = 0;
+        
+        const newFeedItems = items.map(item => {
+            if (item.itemCase === "TX") newTxs++;
+            if (item.itemCase === "BLOCK") newBlocks++;
+            // The rust struct used rename_all="camelCase", so it's itemType
+            if (item.itemType === "TX") newTxs++;
+            if (item.itemType === "BLOCK") newBlocks++;
+            return {
+                ...item,
+                id: item.hash + '-' + Math.random().toString(36).substr(2, 5),
+                time: timestamp
+            };
+        });
+
+        setTxSeenCount(prev => prev + newTxs);
+        setBlockSeenCount(prev => prev + newBlocks);
+        
+        setInvFeed(prev => {
+            const next = [...newFeedItems, ...prev];
+            return next.slice(0, 200); // Cap at 200 items to prevent memory bloat
+        });
+      });
     }
 
     setupListeners();
@@ -89,6 +131,7 @@ function App() {
       if (unlistenConnection) unlistenConnection();
       if (unlistenPeerInfo) unlistenPeerInfo();
       if (unlistenBitcoinMsg) unlistenBitcoinMsg();
+      if (unlistenInv) unlistenInv();
     };
   }, []);
 
@@ -193,94 +236,47 @@ function App() {
   return (
     <>
       {/* Top bar */}
-      <header className="topbar">
-        <div className="topbar-left">
-          <span className="logo">⬡</span>
-          <span className="app-title">Cthulhu</span>
-          <span className="network-badge">Testnet3</span>
-        </div>
-        <div className="topbar-right">
-          <button className="btn btn-ghost" onClick={() => setIsGuideOpen(true)}>Message Guide</button>
-          <button className="btn btn-ghost" onClick={() => setIsAboutOpen(true)}>About</button>
-          <span className={`dot dot-${status}`}></span>
-          <span id="status-text">{statusText}</span>
-          <button className="btn btn-primary" onClick={handleConnect} disabled={isConnected || status === 'connecting'}>Connect</button>
-          <button className="btn btn-danger" onClick={handleDisconnect} disabled={!isConnected}>Disconnect</button>
-        </div>
-      </header>
+      <Topbar 
+        status={status}
+        statusText={statusText}
+        isConnected={isConnected}
+        peerAddress={peerAddress}
+        handleConnect={handleConnect}
+        handleDisconnect={handleDisconnect}
+        setIsGuideOpen={setIsGuideOpen}
+        setIsAboutOpen={setIsAboutOpen}
+      />
 
       {/* Layout */}
       <div className="layout">
-        {/* Sidebar */}
-        <aside className="sidebar">
-          {/* Peer info */}
-          <div className="card">
-            <div className="card-title">Peer Info</div>
-            <div className="info-row"><span className="label">Address</span><span>{peerAddress}</span></div>
-            <div className="info-row"><span className="label">Agent</span><span>{peerInfo.agent}</span></div>
-            <div className="info-row"><span className="label">Height</span><span>{peerInfo.height}</span></div>
-            <div className="info-row"><span className="label">Protocol</span><span>{peerInfo.version}</span></div>
-            <div className="info-row"><span className="label">Services</span><span>{peerInfo.services}</span></div>
-            <div className="info-row"><span className="label">Messages</span><span>{messageCount}</span></div>
-          </div>
-
-          {/* TX Lookup */}
-          <div className="card">
-            <div className="card-title">Look Up Transaction</div>
-            <p className="hint">Works for any transaction — confirmed or unconfirmed — via mempool.space.</p>
-            <input
-              id="txid-input"
-              className="text-input"
-              placeholder="Paste 64-char TXID here..."
-              maxLength="64"
-              value={txidInput}
-              onChange={(e) => setTxidInput(e.target.value)}
-            />
-            <button
-              className="btn btn-primary full-width"
-              onClick={handleFetchTx}
-              disabled={isFetchingTx || txidInput.trim().length !== 64}
-            >
-              {isFetchingTx ? 'Fetching...' : 'Fetch Transaction'}
-            </button>
-          </div>
-
-          {/* Mempool */}
-          <div className="card">
-            <div className="card-title">Mempool Snapshot</div>
-            <p className="hint">Fetches all unconfirmed transactions via mempool.space — reliable and instant.</p>
-            {mempoolStats && (
-              <div className="mempool-stats-row">
-                <div className="mempool-stat"><div className="mempool-stat-val">{mempoolStats.count?.toLocaleString()}</div><div className="mempool-stat-lbl">TXs</div></div>
-                <div className="mempool-stat"><div className="mempool-stat-val">{(mempoolStats.vsize / 1e6).toFixed(1)}MB</div><div className="mempool-stat-lbl">Size</div></div>
-                <div className="mempool-stat"><div className="mempool-stat-val">{(mempoolStats.total_fee / 1e8).toFixed(4)}</div><div className="mempool-stat-lbl">Fees (tBTC)</div></div>
-              </div>
-            )}
-            <button className="btn btn-secondary full-width" onClick={handleFetchMempool} disabled={isFetchingMempool}>
-              {isFetchingMempool ? 'Loading...' : 'Fetch Mempool'}
-            </button>
-          </div>
-        </aside>
+        <Sidebar 
+          peerAddress={peerAddress}
+          peerInfo={peerInfo}
+          messageCount={messageCount}
+          txidInput={txidInput}
+          setTxidInput={setTxidInput}
+          handleFetchTx={handleFetchTx}
+          isFetchingTx={isFetchingTx}
+          mempoolStats={mempoolStats}
+          handleFetchMempool={handleFetchMempool}
+          isFetchingMempool={isFetchingMempool}
+        />
 
         {/* Main content */}
         <main className="main-content">
-          {/* Live log */}
-          <div className="card flex-card">
-            <div className="card-title">
-              Live P2P Message Log
-              <button className="btn btn-ghost btn-small" onClick={handleClearLog}>Clear</button>
-            </div>
-            <div className="message-log">
-              {messages.length === 0 && <div className="log-placeholder">Connect to a peer to watch live Bitcoin P2P messages...</div>}
-              {messages.map(msg => (
-                <div key={msg.id} className="log-entry">
-                  <span className="log-num">#{String(msg.id).padStart(4, '0')}</span>
-                  <span className={`log-cmd cmd-${msg.command.toLowerCase()}`}>{msg.command}</span>
-                  <span className="log-sum">{msg.summary}</span>
-                </div>
-              ))}
-              <div ref={logEndRef} />
-            </div>
+          <div className="log-grid">
+            <LiveMessageLog 
+              messages={messages}
+              handleClearLog={handleClearLog}
+              logEndRef={logEndRef}
+            />
+
+            <LiveNetworkActivity 
+              txSeenCount={txSeenCount}
+              blockSeenCount={blockSeenCount}
+              invFeed={invFeed}
+              handleMempoolRowClick={handleMempoolRowClick}
+            />
           </div>
 
           {/* Mempool table */}
@@ -305,139 +301,25 @@ function App() {
         </main>
       </div>
 
-      {/* ── Transaction Modal ── */}
-      {isModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <div className="modal-title">Transaction Details</div>
-                <div className="modal-subtitle">Source: mempool.space Testnet API</div>
-              </div>
-              <button className="modal-close" onClick={() => setIsModalOpen(false)}>×</button>
-            </div>
-            <div className="modal-body">
-              {txError ? (
-                <div className="tx-error">
-                  <div className="tx-error-icon">⚠</div>
-                  <div className="tx-error-msg">{txError}</div>
-                </div>
-              ) : txData ? (
-                <>
-                  {/* TXID + status */}
-                  <div className="tx-header">
-                    <div className="tx-txid">{txData.txid}</div>
-                    <div className="tx-badges">
-                      <span className="badge">v{txData.version}</span>
-                      {txData.status?.confirmed
-                        ? <span className="badge badge-green">✓ Confirmed — Block #{txData.status.block_height}</span>
-                        : <span className="badge badge-orange">⏳ Unconfirmed</span>
-                      }
-                    </div>
-                  </div>
+      <TransactionModal 
+        isModalOpen={isModalOpen}
+        setIsModalOpen={setIsModalOpen}
+        txError={txError}
+        txData={txData}
+        satsToTBTC={satsToTBTC}
+        formatInput={formatInput}
+      />
 
-                  {/* Stats */}
-                  <div className="tx-stats">
-                    <div className="stat"><div className="stat-value">{txData.vin?.length}</div><div className="stat-label">Inputs</div></div>
-                    <div className="stat"><div className="stat-value">{txData.vout?.length}</div><div className="stat-label">Outputs</div></div>
-                    <div className="stat"><div className="stat-value">{txData.fee?.toLocaleString()}</div><div className="stat-label">Fee (sats)</div></div>
-                    <div className="stat"><div className="stat-value">{txData.size}</div><div className="stat-label">Bytes</div></div>
-                  </div>
+      <AboutModal 
+        isAboutOpen={isAboutOpen}
+        setIsAboutOpen={setIsAboutOpen}
+      />
 
-                  {/* Inputs */}
-                  <div className="tx-section-title">Inputs</div>
-                  <div className="tx-list">
-                    {txData.vin?.map((inp, i) => (
-                      <div key={i} className="tx-row">
-                        <div className="tx-row-label">{formatInput(inp)}</div>
-                        {inp.prevout && <div className="tx-row-value">{satsToTBTC(inp.prevout.value)} tBTC · {inp.prevout.scriptpubkey_type}</div>}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Outputs */}
-                  <div className="tx-section-title">Outputs</div>
-                  <div className="tx-list">
-                    {txData.vout?.map((out, i) => (
-                      <div key={i} className="tx-row">
-                        <div className="tx-row-label">{out.scriptpubkey_address || out.scriptpubkey_type}</div>
-                        <div className="tx-row-value">{satsToTBTC(out.value)} tBTC</div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── About Modal ── */}
-      {isAboutOpen && (
-        <div className="modal-overlay" onClick={() => setIsAboutOpen(false)}>
-          <div className="modal-content about-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <div><div className="modal-title">About Cthulhu</div><div className="modal-subtitle">Bitcoin P2P Network Observer</div></div>
-              <button className="modal-close" onClick={() => setIsAboutOpen(false)}>×</button>
-            </div>
-            <div className="modal-body">
-              <div className="about-logo-row">
-                <span className="about-icon">⬡</span>
-                <div><div className="about-app-name">Cthulhu</div><div className="about-version">v0.1.0 — Testnet3</div></div>
-              </div>
-              <p className="about-text">Cthulhu is a Bitcoin Testnet P2P observer built with Rust and React. It connects directly to a Bitcoin node over a raw TCP socket and lets you watch the Bitcoin peer-to-peer protocol in real-time. Transaction and mempool data is fetched from the mempool.space API for reliability.</p>
-              <div className="about-section-title">Features</div>
-              <ul className="about-list">
-                <li>🔗 Connects to live Testnet peers via DNS seed discovery</li>
-                <li>🤝 Full Bitcoin version/verack handshake</li>
-                <li>📡 Real-time P2P message stream</li>
-                <li>🔍 Transaction lookup for any TX (confirmed or unconfirmed)</li>
-                <li>📸 Mempool snapshot with live unconfirmed transactions</li>
-              </ul>
-              <div className="about-section-title">Tech Stack</div>
-              <div className="about-tags">
-                {['Rust', 'Tauri', 'React', 'Vite', 'Bitcoin P2P', 'Testnet3', 'mempool.space'].map(t => (
-                  <span key={t} className="about-tag">{t}</span>
-                ))}
-              </div>
-              <div className="about-footer">Built with ❤️ — Raw Bitcoin. No shortcuts.</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Message Guide Modal ── */}
-      {isGuideOpen && (
-        <div className="modal-overlay" onClick={() => setIsGuideOpen(false)}>
-          <div className="modal-content guide-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <div><div className="modal-title">Bitcoin P2P Message Guide</div><div className="modal-subtitle">What every message in the live log means</div></div>
-              <button className="modal-close" onClick={() => setIsGuideOpen(false)}>×</button>
-            </div>
-            <div className="modal-body">
-              {MESSAGE_GUIDE.map(entry => (
-                <div key={entry.cmd} className="guide-entry">
-                  <div className="guide-entry-header">
-                    <span className={`log-cmd cmd-${entry.cmd}`}>{entry.cmd}</span>
-                    <span className="guide-title">{entry.title}</span>
-                  </div>
-                  <p className="guide-desc">{entry.description}</p>
-                  {entry.fields.length > 0 && (
-                    <div className="guide-fields">
-                      {entry.fields.map(f => (
-                        <div key={f.name} className="guide-field">
-                          <span className="guide-field-name">{f.name}</span>
-                          <span className="guide-field-detail">{f.detail}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <MessageGuideModal 
+        isGuideOpen={isGuideOpen}
+        setIsGuideOpen={setIsGuideOpen}
+        MESSAGE_GUIDE={MESSAGE_GUIDE}
+      />
     </>
   );
 }

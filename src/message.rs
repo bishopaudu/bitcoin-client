@@ -24,9 +24,7 @@ use crate::crypto::double_sha256;
 // and vice versa. They also help re-synchronize a parser that has lost its
 // place in the byte stream — you can scan forward looking for the magic bytes.
 
-pub const MAGIC_MAINNET: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9]; // Production network
 pub const MAGIC_TESTNET: [u8; 4] = [0x0B, 0x11, 0x09, 0x07]; // Testnet3 (our target)
-pub const MAGIC_REGTEST: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA]; // Local regression test
 
 // ── Message Header ────────────────────────────────────────────────────────────
 

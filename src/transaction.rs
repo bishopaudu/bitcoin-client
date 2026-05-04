@@ -66,10 +66,7 @@
 // valid legacy transaction — so seeing 0x00 where input_count should be
 // is an unambiguous signal that this is SegWit.
 
-use std::net::TcpStream;
-use crate::peer::send_message;
 use crate::encoding::decode_varint;
-use crate::crypto::hex_encode;
 
 // ── PART 1: Requesting a Transaction ─────────────────────────────────────────
 
@@ -99,38 +96,7 @@ use crate::crypto::hex_encode;
 //   The peer receives this getdata, looks up the transaction in its mempool
 //   or transaction index, and sends back a `tx` message. That `tx` message
 //   is caught by the message loop in main.rs and routed to decode_and_display_tx().
-pub fn request_transaction(
-    stream: &mut TcpStream,
-    txid: &[u8; 32],
-    magic: [u8; 4],
-) -> std::io::Result<()> {
-    let mut payload = Vec::new();
 
-    // Item count: we're requesting exactly 1 item.
-    // varint values 0-252 are encoded as a single byte, so 0x01 = "count of 1".
-    payload.push(0x01);
-
-    // Item type: MSG_TX = 1, encoded as a 4-byte little-endian u32.
-    // Little-endian means the least-significant byte comes first:
-    //   1u32 in LE = [0x01, 0x00, 0x00, 0x00]
-    let msg_tx: u32 = 1;
-    payload.extend_from_slice(&msg_tx.to_le_bytes());
-
-    // Item hash: the 32-byte txid, exactly as received from the inv message.
-    // We do NOT reverse it here. The inv gave it to us in the internal byte
-    // order that the peer uses — we pass it straight back the same way.
-    payload.extend_from_slice(txid);
-
-    // Display the txid reversed (Bitcoin's display convention) so it matches
-    // what you'd see on a block explorer website.
-    let mut display_txid = *txid;
-    display_txid.reverse();
-    println!("    [→] Requesting full TX data for: {}", hex_encode(&display_txid));
-
-    // send_message (from peer.rs) wraps this payload in a 24-byte header
-    // (magic + "getdata" + payload_length + checksum) and writes it to the socket.
-    send_message(stream, "getdata", &payload, magic)
-}
 
 // ── PART 2: Data Structures for a Parsed Transaction ─────────────────────────
 
@@ -147,16 +113,6 @@ pub struct TxInput {
     // If prev_txid is all zeros and this is 0xFFFFFFFF, it's a COINBASE input
     // (the special input that claims the block reward — no real prev output).
     pub prev_index: u32,
-
-    // The "unlocking script" — contains the signature and public key that
-    // prove we're allowed to spend this output.
-    // In SegWit inputs, this is often empty (the proof is in the witness instead).
-    pub script_sig: Vec<u8>,
-
-    // Used for Replace-By-Fee (RBF) and relative timelocks.
-    // 0xFFFFFFFF = default (no special meaning, final).
-    // Any other value signals the tx can be replaced or has a relative timelock.
-    pub sequence: u32,
 }
 
 // Represents one output in a Bitcoin transaction.
@@ -249,17 +205,15 @@ pub fn parse_transaction(data: &[u8]) -> Result<Transaction, String> {
         if data.len() < offset + script_len {
             return Err("TX truncated while reading input scriptSig".to_string());
         }
-        let script_sig = data[offset..offset + script_len].to_vec();
-        offset += script_len;
+        offset += script_len; // Skip script_sig
 
         // sequence: 4 bytes, little-endian u32
         if data.len() < offset + 4 {
             return Err("TX truncated while reading input sequence".to_string());
         }
-        let sequence = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-        offset += 4;
+        offset += 4; // Skip sequence
 
-        inputs.push(TxInput { prev_txid, prev_index, script_sig, sequence });
+        inputs.push(TxInput { prev_txid, prev_index });
     }
 
     // ── Field: output_count (varint) + outputs ────────────────────────────
@@ -320,138 +274,3 @@ pub fn parse_transaction(data: &[u8]) -> Result<Transaction, String> {
     Ok(Transaction { version, inputs, outputs, locktime, is_segwit })
 }
 
-// ── PART 4: Script Classification ────────────────────────────────────────────
-
-// Identify a scriptPubKey's type and return a human-readable description.
-//
-// Bitcoin uses "scripts" — a simple stack-based language — to define spending
-// conditions. There are standard patterns that wallets produce. Recognising
-// these patterns lets us say "P2PKH" instead of printing raw hex.
-//
-// All byte values below are Bitcoin Script opcodes:
-//   0x76 = OP_DUP          (duplicate top stack item)
-//   0xa9 = OP_HASH160      (RIPEMD160(SHA256(top)))
-//   0x14 = push 20 bytes
-//   0x88 = OP_EQUALVERIFY  (check equal, fail if not)
-//   0xac = OP_CHECKSIG     (verify signature against pubkey)
-//   0x87 = OP_EQUAL
-//   0x00 = OP_0 / OP_FALSE
-//   0x20 = push 32 bytes
-//   0x6a = OP_RETURN       (immediately fail — provably unspendable)
-fn classify_script(script: &[u8]) -> String {
-    match script {
-        // P2PKH — Pay to Public Key Hash
-        // The most traditional Bitcoin address type (starts with 'm' or 'n' on testnet)
-        // Pattern: OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG
-        s if s.len() == 25
-            && s[0] == 0x76  // OP_DUP
-            && s[1] == 0xa9  // OP_HASH160
-            && s[2] == 0x14  // push 20 bytes
-            && s[23] == 0x88 // OP_EQUALVERIFY
-            && s[24] == 0xac // OP_CHECKSIG
-        => format!("P2PKH  hash160={}", hex_encode(&s[3..23])),
-
-        // P2SH — Pay to Script Hash
-        // Used for multisig and other complex scripts (starts with '2' on testnet)
-        // Pattern: OP_HASH160 <20-byte hash> OP_EQUAL
-        s if s.len() == 23
-            && s[0] == 0xa9  // OP_HASH160
-            && s[1] == 0x14  // push 20 bytes
-            && s[22] == 0x87 // OP_EQUAL
-        => format!("P2SH   hash160={}", hex_encode(&s[2..22])),
-
-        // P2WPKH — Pay to Witness Public Key Hash (native SegWit, bech32 addresses)
-        // Pattern: OP_0 <20-byte hash>
-        s if s.len() == 22 && s[0] == 0x00 && s[1] == 0x14
-        => format!("P2WPKH hash160={}", hex_encode(&s[2..])),
-
-        // P2WSH — Pay to Witness Script Hash (SegWit multisig)
-        // Pattern: OP_0 <32-byte hash>
-        s if s.len() == 34 && s[0] == 0x00 && s[1] == 0x20
-        => format!("P2WSH  hash256={}", hex_encode(&s[2..])),
-
-        // OP_RETURN — Data embedding (provably unspendable)
-        // Used to embed arbitrary data in the blockchain (e.g. for timestamping)
-        s if !s.is_empty() && s[0] == 0x6a
-        => format!("OP_RETURN data={}", hex_encode(&s[1..])),
-
-        // Anything not matching a known pattern
-        s => format!("UNKNOWN script={}", hex_encode(s)),
-    }
-}
-
-// ── PART 5: Display a Decoded Transaction ────────────────────────────────────
-
-// Decode and pretty-print a raw `tx` message payload.
-//
-// `payload`:   the raw bytes from the peer's `tx` message (header already stripped)
-// `raw_txid`:  the txid in internal byte order (as received from the inv message)
-//
-// HOW THIS IS CALLED:
-//   In main.rs, the message loop receives messages from the peer.
-//   When it receives a `tx` message, it calls this function.
-//   The `raw_txid` comes from the `inv` handler — we store the txid when we
-//   request it, then pass it here when the peer responds.
-pub fn decode_and_display_tx(payload: &[u8], raw_txid: &[u8; 32]) {
-    // Reverse the txid for display — Bitcoin shows hashes in reversed byte order.
-    // The internal storage order and the display order are opposite by convention.
-    let mut display_txid = *raw_txid;
-    display_txid.reverse();
-
-    println!("\n    ╔══ TRANSACTION ══════════════════════════════════════════════");
-    println!("    ║  TXID: {}", hex_encode(&display_txid));
-
-    match parse_transaction(payload) {
-        Err(e) => {
-            println!("    ║  [!] Parse error: {}", e);
-        }
-        Ok(tx) => {
-            println!("    ║  Version:  {}{}",
-                tx.version,
-                if tx.is_segwit { " (SegWit — witness data present)" } else { "" }
-            );
-
-            println!("    ║");
-            println!("    ║  INPUTS: {}", tx.inputs.len());
-            for (i, input) in tx.inputs.iter().enumerate() {
-                // Reverse the prev_txid for display
-                let mut display_prev = input.prev_txid;
-                display_prev.reverse();
-
-                // Coinbase inputs are special — they have no real previous output.
-                // They're how miners claim the block reward + fees.
-                let is_coinbase = input.prev_txid == [0u8; 32]
-                    && input.prev_index == 0xFFFF_FFFF;
-
-                if is_coinbase {
-                    println!("    ║    [{}] COINBASE (block reward claim — no previous output)", i);
-                } else {
-                    println!("    ║    [{}] Spends output #{} of tx {}",
-                        i, input.prev_index, hex_encode(&display_prev));
-                }
-                // Note: we deliberately don't print scriptSig bytes here to keep
-                // output readable. In SegWit inputs scriptSig is often empty anyway.
-            }
-
-            println!("    ║");
-            println!("    ║  OUTPUTS: {}", tx.outputs.len());
-            let mut total_sats: u64 = 0;
-            for (i, output) in tx.outputs.iter().enumerate() {
-                total_sats += output.value;
-                // Convert satoshis → BTC for display (8 decimal places)
-                let btc = output.value as f64 / 100_000_000.0;
-                let script_type = classify_script(&output.script_pubkey);
-                println!("    ║    [{}] {:>14.8} BTC  →  {}", i, btc, script_type);
-            }
-
-            println!("    ║");
-            println!("    ║  Total output: {:.8} BTC", total_sats as f64 / 100_000_000.0);
-            println!("    ║  Locktime:     {}", match tx.locktime {
-                0 => "0 (no restriction)".to_string(),
-                n if n < 500_000_000 => format!("block height {}", n),
-                n => format!("unix timestamp {}", n),
-            });
-        }
-    }
-    println!("    ╚═════════════════════════════════════════════════════════════");
-}
