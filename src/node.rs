@@ -1,24 +1,9 @@
-// src/node.rs — Background Bitcoin P2P thread and shared event types
-//
-// This module has two jobs:
-//
-//   1. Define the data structures (events) that flow from Rust → JavaScript.
-//      These are serialized to JSON by serde and sent across the Tauri bridge.
-//
-//   2. Run the Bitcoin P2P connection on a background thread so it never
-//      blocks Tauri's main thread (which owns the UI window).
-//
-// Why a background thread?
-//   Your Bitcoin message loop calls read_message() which blocks waiting for
-//   data from the TCP socket. If this ran on the main thread, the entire
-//   window would freeze. By spawning a separate OS thread, the UI stays
-//   responsive while Bitcoin network I/O happens in the background.
+// src/node.rs — Background Bitcoin P2P thread and event handling
 
 use std::sync::{Arc, Mutex};
 use std::net::TcpStream;
 use tauri::{AppHandle, Manager};
 use serde::Serialize;
-
 use crate::network::find_testnet_peers;
 use crate::peer::{connect_to_peer, send_message};
 use crate::version::{build_version_payload, generate_nonce};
@@ -29,139 +14,75 @@ use crate::crypto::{double_sha256, hex_encode};
 use crate::version::decode_version_payload;
 use crate::transaction::parse_transaction;
 
-// ── Event structs ─────────────────────────────────────────────────────────────
-//
-// Each struct below represents one type of event we emit from Rust to JS.
-// #[derive(Serialize)] generates the JSON serialization automatically:
-//   struct MessageEvent { command: "ping", summary: "nonce=ABC" }
-//   becomes: {"command":"ping","summary":"nonce=ABC"}
-//
-// #[derive(Clone)] is needed because Tauri's emit_all() takes ownership,
-// so we need to be able to clone the struct when emitting.
-//
-// The #[serde(rename_all = "camelCase")] attribute converts Rust's snake_case
-// field names to JavaScript's camelCase convention:
-//   peer_address → peerAddress
-//   is_connected → isConnected
-
-// Emitted when our connection status changes (connecting, connected, error, etc.)
+// Event structs emitted to JavaScript
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionEvent {
-    // "connecting" | "connected" | "handshake_complete" | "disconnected" | "error"
     pub status: String,
-    // Human-readable detail about this status change
     pub message: String,
-    // The peer's IP:port, empty string if not yet connected
     pub peer_address: String,
 }
 
-// Emitted for every Bitcoin P2P message we receive from the peer.
-// This populates the live message log panel in the UI.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageEvent {
-    // The message command: "version", "inv", "ping", "tx", etc.
     pub command: String,
-    // A one-line human-readable summary of the message content
     pub summary: String,
-    // Unix timestamp in milliseconds (JS uses ms, not seconds)
     pub timestamp: u64,
-    // Running count of messages received (for display numbering)
     pub message_number: u64,
 }
 
-// Emitted when we receive peer info from a `version` message.
-// This populates the "Peer Info" panel in the UI.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerInfoEvent {
     pub protocol_version: i32,
-    // The peer's software name, e.g. "/Satoshi:25.0.0/"
     pub user_agent: String,
-    // The peer's best block height (how synced they are)
     pub start_height: i32,
-    // Services bitmask as hex string, e.g. "0x0000000000000409"
     pub services: String,
 }
 
-// Emitted when we decode a full transaction.
-// This populates the "Transaction Detail" panel in the UI.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionEvent {
-    // The txid in display order (reversed bytes, hex encoded)
     pub txid: String,
-    // The node IP we fetched this from
     pub fetched_from: String,
     pub version: i32,
     pub is_segwit: bool,
     pub input_count: usize,
     pub output_count: usize,
-    // Total value of all outputs in satoshis
     pub total_output_sats: u64,
-    // Each output as a string: "0.00450000 BTC → P2WPKH hash=ab12..."
     pub outputs: Vec<String>,
-    // Each input as a string: "Spends tx:9f8e... output #0"
     pub inputs: Vec<String>,
-    // Locktime decoded as a human string
     pub locktime: String,
 }
 
-// Emitted when we receive a mempool `inv` response.
-// This populates the "Mempool" panel in the UI.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MempoolEvent {
-    // How many unconfirmed transactions the peer reported
     pub total_count: u64,
-    // The first N txids (in display order) for showing in the table
     pub txids: Vec<String>,
 }
 
-// ── Live Inventory Activity (inv) ──────────────────────────────────────────────
-//
-// Sent to the UI whenever the peer announces new network activity.
-// This drives the real-time "Network Activity" feed.
-
-// Represents a single item inside an `inv` announcement
+// Live Inventory Activity (inv)
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InvItem {
     pub item_type: String, // "TX" or "BLOCK"
-    pub hash: String,      // 64-character hex string (TXID or Block Hash)
+    pub hash: String,
 }
 
-// The full announcement containing one or more items
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InvAnnouncement {
     pub items: Vec<InvItem>,
-    pub timestamp: u64, // Unix timestamp (in ms) to help React with relative time
+    pub timestamp: u64,
 }
 
-// ── Shared application state ──────────────────────────────────────────────────
-//
-// This struct holds state that needs to be accessed from multiple places:
-//   - The background thread reads/writes it
-//   - Tauri commands (from JS) read/write it
-//
-// We wrap it in Arc<Mutex<...>> so it can be safely shared across threads.
-//   Arc  = "Atomic Reference Count" — lets multiple owners share one value
-//   Mutex = ensures only one thread accesses it at a time (mutual exclusion)
-//
-// Pattern: Arc<Mutex<T>> is the standard Rust way to share mutable state
-// between threads. You'll see this everywhere in concurrent Rust code.
+// Shared application state
 pub struct NodeState {
-    // The live TCP stream, if connected. None if not connected.
-    // Wrapped in Option because we might not have a connection yet.
     pub stream: Option<TcpStream>,
-    // Whether we're currently connected and past the handshake
     pub is_connected: bool,
-    // Whether the background thread should keep running.
-    // Setting this to false causes the loop to exit and the thread to end.
     pub should_run: bool,
-    // Whether we've sent a mempool request and are waiting for the inv response
     pub mempool_requested: bool,
     pub mempool_done: bool,
 }
@@ -178,32 +99,12 @@ impl NodeState {
     }
 }
 
-// Type alias for our shared state — avoids typing Arc<Mutex<NodeState>> everywhere
 pub type SharedState = Arc<Mutex<NodeState>>;
 
-// ── Background thread function ────────────────────────────────────────────────
-//
-// This is the entry point for the background thread.
-// It's called from commands.rs when JS invokes the "connect" command.
-//
-// Parameters:
-//   app_handle — Tauri's handle for emitting events to the frontend.
-//                Cloneable and Send-safe — fine to pass into threads.
-//   state      — shared mutable state (Arc<Mutex<NodeState>>)
-//
-// This function:
-//   1. Discovers a testnet peer
-//   2. Opens a TCP connection
-//   3. Sends the version message
-//   4. Loops reading messages, emitting events for each one
-//   5. Exits cleanly when state.should_run becomes false
+// Background worker thread for Bitcoin P2P communication
 pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
     let magic = MAGIC_TESTNET;
 
-    // ── Emit helper closure ───────────────────────────────────────────────
-    // Instead of calling app_handle.emit_all(...) everywhere (verbose),
-    // we define a small closure that does it in one line.
-    // A closure is like an inline function that captures variables from its scope.
     let emit_connection = |status: &str, message: &str, peer: &str| {
         let _ = app_handle.emit_all("connection-status", ConnectionEvent {
             status: status.to_string(),
@@ -212,7 +113,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
         });
     };
 
-    // ── Step 1: Peer discovery ────────────────────────────────────────────
     emit_connection("connecting", "Resolving DNS seeds...", "");
 
     let mut candidates = find_testnet_peers();
@@ -223,7 +123,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
         ];
     }
 
-    // ── Step 2: TCP connection ────────────────────────────────────────────
     emit_connection("connecting", &format!("Trying {} candidates...", candidates.len()), "");
 
     let (stream, peer_addr) = {
@@ -249,8 +148,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
 
     emit_connection("connected", "TCP connection established", &peer_addr);
 
-    // Store the stream in shared state so commands.rs can write to it
-    // (e.g. when JS sends a "request transaction" command)
     let socket_addr: std::net::SocketAddr = peer_addr.parse().unwrap();
     let peer_ip = match socket_addr.ip() {
         std::net::IpAddr::V4(v4) => v4.octets(),
@@ -258,19 +155,14 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
     };
     let peer_port = socket_addr.port();
 
-    // ── Step 3: Send version ──────────────────────────────────────────────
     {
-        // Scope the mutex lock so it's released before we enter the read loop
         let mut s = match state.lock() {
             Ok(s) => s,
             Err(_) => return,
         };
-        // Clone the stream so we can store one copy and use another
-        // TcpStream::try_clone() creates a second handle to the same socket
         s.stream = stream.try_clone().ok();
     }
 
-    // We need our own clone for this thread to read from
     let mut my_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
@@ -285,13 +177,11 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
         return;
     }
 
-    // ── Step 4: Message loop ──────────────────────────────────────────────
     let mut message_count: u64 = 0;
     let mut _handshake_done = false;
     let mut _got_their_version = false;
 
     loop {
-        // Check if we should stop (set by the "disconnect" command)
         {
             let s = match state.lock() {
                 Ok(s) => s,
@@ -302,13 +192,11 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
             }
         }
 
-        // Read one complete message from the socket
         let msg = match read_message(&mut my_stream, magic) {
             Ok(m) => m,
             Err(e) => {
                 match e.kind() {
                     std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-                        // Timeout — send a ping to stay alive
                         let nonce = generate_nonce().to_le_bytes();
                         let _ = send_message(&mut my_stream, "ping", &nonce, magic);
                         continue;
@@ -323,25 +211,14 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
 
         message_count += 1;
 
-        // ── Dispatch each message type ────────────────────────────────────
-        // For each message we:
-        //   a) Do any protocol-level response (like sending verack or pong)
-        //   b) Build a human-readable summary string
-        //   c) If relevant, emit a specific event (peer info, tx, mempool)
-        //   d) Always emit a MessageEvent for the live log
         let summary = match msg.command.as_str() {
-
             "version" => {
                 _got_their_version = true;
-                // Send verack immediately
                 let _ = send_message(&mut my_stream, "verack", &[], magic);
 
-                // Parse the version payload to extract peer info
                 let info_str = decode_version_payload(&msg.payload)
                     .unwrap_or_else(|_| "parse error".to_string());
 
-                // Also emit a structured PeerInfoEvent so the UI can
-                // populate the peer info panel with individual fields
                 if let Ok(info) = parse_version_for_event(&msg.payload) {
                     let _ = app_handle.emit_all("peer-info", info);
                 }
@@ -358,7 +235,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                     "Version handshake complete — receiving network data",
                     &peer_addr);
 
-                // After handshake, ask for peer addresses
                 let _ = send_message(&mut my_stream, "getaddr", &[], magic);
 
                 "Handshake complete".to_string()
@@ -367,7 +243,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
             "ping" => {
                 if msg.payload.len() >= 8 {
                     let nonce = u64::from_le_bytes(msg.payload[..8].try_into().unwrap());
-                    // Echo the nonce back as pong
                     let _ = send_message(&mut my_stream, "pong", &msg.payload[..8], magic);
                     format!("nonce={:016X} → sent pong", nonce)
                 } else {
@@ -385,18 +260,15 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
             }
 
             "inv" => {
-                // Parse the inv to count items and build summary
                 let (count, mut off) = decode_varint(&msg.payload, 0)
                     .unwrap_or((0, 0));
 
-                // Check if this is a mempool response
                 let is_mempool = {
                     let s = state.lock().unwrap();
                     s.mempool_requested && !s.mempool_done
                 };
 
                 if is_mempool {
-                    // Collect all txids from this inv
                     let mut txids: Vec<[u8; 32]> = Vec::new();
                     for _ in 0..count {
                         if off + 36 > msg.payload.len() { break; }
@@ -430,12 +302,10 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
 
                     format!("MEMPOOL SNAPSHOT: {} unconfirmed transactions", txids.len())
                 } else {
-                    // Regular live inv — collect items to emit to UI feed
-                    let mut items = Vec::new();       // For the short string summary
-                    let mut event_items = Vec::new(); // For the new rich InvAnnouncement
+                    let mut items = Vec::new();
+                    let mut event_items = Vec::new();
                     let mut local_off = off;
                     
-                    // Parse all items in the inv message
                     for i in 0..count {
                         if local_off + 36 > msg.payload.len() { break; }
                         let inv_type = u32::from_le_bytes(
@@ -446,7 +316,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                         local_off += 36;
                         hash.reverse();
                         
-                        // Parse type (handle SegWit types 0x40000001 and 0x40000002)
                         let type_str = match inv_type {
                             1 | 0x40000001 => "TX",
                             2 | 0x40000002 => "BLOCK",
@@ -455,13 +324,10 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                         
                         let hash_hex = hex_encode(&hash);
                         
-                        // Build short summary string for the log (only first 5 items)
                         if i < 5 {
                             items.push(format!("{} {}...", type_str, &hash_hex[..16]));
                         }
                         
-                        // Collect items for the real-time activity feed.
-                        // Cap at 100 items per event to prevent UI lag on huge announcements.
                         if event_items.len() < 100 {
                             event_items.push(InvItem {
                                 item_type: type_str.to_string(),
@@ -470,7 +336,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                         }
                     }
                     
-                    // Emit the new real-time network activity event to React
                     let _ = app_handle.emit_all("inv-announcement", InvAnnouncement {
                         items: event_items,
                         timestamp: std::time::SystemTime::now()
@@ -479,7 +344,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                             .as_millis() as u64,
                     });
 
-                    // Return the short summary string for the Live Message Log
                     let suffix = if count > 5 {
                         format!(" (+{} more)", count - 5)
                     } else {
@@ -490,13 +354,11 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
             }
 
             "tx" => {
-                // Compute the txid (double-SHA256 of raw tx, reversed for display)
                 let mut txid = double_sha256(&msg.payload);
                 txid.reverse();
                 let txid_str = hex_encode(&txid);
 
-                // Parse the transaction and emit a structured event for the UI
-                txid.reverse(); // un-reverse for internal use in parse
+                txid.reverse();
                 if let Ok(tx) = parse_transaction(&msg.payload) {
                     let inputs_display: Vec<String> = tx.inputs.iter().map(|inp| {
                         let is_coinbase = inp.prev_txid == [0u8; 32]
@@ -525,7 +387,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
                         n => format!("unix {}", n),
                     };
 
-                    // Reverse txid back for display
                     txid.reverse();
                     let _ = app_handle.emit_all("transaction-decoded", TransactionEvent {
                         txid: hex_encode(&txid),
@@ -584,7 +445,7 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
             _other          => format!("({} bytes payload)", msg.payload.len()),
         };
 
-        // ── Always emit a MessageEvent for the live log ───────────────────
+        // Emit message event for the live log
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -598,7 +459,6 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
         });
     }
 
-    // Thread is exiting — update state
     if let Ok(mut s) = state.lock() {
         s.is_connected = false;
         s.should_run = false;
@@ -606,10 +466,8 @@ pub fn run_bitcoin_node(app_handle: AppHandle, state: SharedState) {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
-// Parse a version payload into a PeerInfoEvent struct.
-// Returns Err if the payload is too short.
 fn parse_version_for_event(payload: &[u8]) -> Result<PeerInfoEvent, ()> {
     if payload.len() < 81 { return Err(()); }
     let version = i32::from_le_bytes(payload[0..4].try_into().map_err(|_| ())?);
@@ -630,7 +488,6 @@ fn parse_version_for_event(payload: &[u8]) -> Result<PeerInfoEvent, ()> {
     })
 }
 
-// Simplified script classifier for the UI (shorter output than transaction.rs)
 fn classify_script_simple(script: &[u8]) -> String {
     match script {
         s if s.len() == 25 && s[0] == 0x76 && s[1] == 0xa9 => "P2PKH".to_string(),
